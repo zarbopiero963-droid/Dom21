@@ -1,0 +1,16 @@
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+logs/*.log
+*.egg-info/
+.env
+config/vault.bin
+config/money_table_*.json
+*.spec
+my_robots.json
+api_config.json
+superagent*.log
+*.session
+*.session-journal

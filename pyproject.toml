@@ -1,0 +1,47 @@
+[tool.pylint.main]
+ignore-patterns = ["venv", ".venv"]
+jobs = 0
+persistent = true
+fail-under = 0
+
+[tool.pylint.messages_control]
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-few-public-methods",
+    "broad-except",
+    "import-outside-toplevel",
+    "trailing-whitespace",
+    "logging-fstring-interpolation",
+    "unused-import",
+    "unused-variable",
+    "unused-argument",
+    "no-name-in-module",
+    "protected-access",
+    "multiple-statements",
+    "unspecified-encoding",
+    "too-many-branches",
+    "too-many-statements",
+    "too-many-locals",
+    "too-many-instance-attributes",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "line-too-long",
+    "invalid-name",
+    "wrong-import-order",
+    "broad-exception-raised",
+    "consider-using-max-builtin",
+    "missing-final-newline",
+    "no-else-break"
+]
+
+[tool.pylint.format]
+max-line-length = 160
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+warn_unused_ignores = false
