@@ -1,0 +1,82 @@
+name: Build SuperAgent V8.5 EXE
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["V4 Test Suite"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  build:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install --prefer-binary -r requirements.txt
+          pip install pyinstaller
+          pip install playwright
+
+      - name: Install Playwright Browsers
+        run: python -m playwright install chromium
+
+      - name: Create Missing Folders
+        run: |
+          if (-not (Test-Path "config")) { mkdir config }
+          if (-not (Test-Path "data")) { mkdir data }
+          if (-not (Test-Path "logs")) { mkdir logs }
+
+      - name: Build with PyInstaller
+        # COMANDO AGGIORNATO PER L'ARCHITETTURA 11/10 (Nuove UI e Vault)
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --clean --name "SuperAgent" `
+            --hidden-import=PySide6 `
+            --hidden-import=telethon `
+            --hidden-import=telethon.tl.types `
+            --hidden-import=telethon.tl.functions `
+            --hidden-import=telethon.extensions `
+            --hidden-import=playwright `
+            --hidden-import=yaml `
+            --hidden-import=cryptography `
+            --hidden-import=psutil `
+            --hidden-import=ui.bookmaker_tab `
+            --hidden-import=ui.selectors_tab `
+            --hidden-import=ui.robots_tab `
+            --hidden-import=ui.desktop_app `
+            --hidden-import=core.telegram_worker `
+            --hidden-import=core.secure_storage `
+            --hidden-import=core.crypto_vault `
+            --hidden-import=core.heartbeat `
+            --add-data "config;config" `
+            --add-data "data;data" `
+            main.py
+
+      - name: Verify Build Existence
+        run: |
+          if (Test-Path "dist/SuperAgent.exe") {
+              Write-Host "Build trovato con successo!"
+          } else {
+              Write-Error "ERRORE: File .exe non trovato nella cartella dist/"
+              exit 1
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperAgent_V8_Windows
+          path: dist/SuperAgent.exe
+          retention-days: 3
