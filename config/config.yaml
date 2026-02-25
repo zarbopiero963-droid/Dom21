@@ -1,0 +1,29 @@
+# ========================================================
+#  SUPERAGENT V8.5 CONFIGURATION - AI STRATEGY EDITION
+# ========================================================
+
+system:
+  debug_level: "info"
+  version: "8.5"
+
+openrouter:
+  api_key: "sk-or-TUACHIAVEQUI"  # Inserisci la tua API Key di OpenRouter
+  model: "google/gemini-2.0-flash-lite-preview-02-05:free"
+
+telegram:
+  api_id: ""       
+  api_hash: ""     
+  phone: ""        
+
+ui:
+  theme: "dark"
+  window_size: [1300, 850]
+
+rpa:
+  enabled: true
+  headless: false
+  bookmaker_url: "https://www.bet365.it"
+
+# --- ⚠️ MODALITÀ SCOMMESSA ---
+betting:
+  allow_place: false     # 🔴 FALSE = SIMULAZIONE | 🟢 TRUE = SOLDI VERI
