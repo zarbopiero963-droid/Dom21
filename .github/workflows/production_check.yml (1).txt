@@ -1,0 +1,59 @@
+name: 🧠 HEDGE FUND STABILITY TEST
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  hedge-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: 🖥️ Install XVFB & Qt Dependencies for Headless GUI
+        # 🛠️ FIX: Aggiunte tutte le librerie Qt/EGL necessarie per PySide6
+        run: sudo apt-get update && sudo apt-get install -y xvfb x11-utils libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 libxcb-shape0 libegl1 libgl1 libxcb-cursor0
+
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          if [ -f requirements.txt ]; then pip install --prefer-binary -r requirements.txt; fi
+          pip install playwright pytest psutil
+
+      - name: 🎭 Install Playwright Browsers
+        run: |
+          playwright install chromium
+
+      - name: "🚀 RUN 1: HEDGE TEST (Stabilità Base)"
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: xvfb-run -a python -u hedge_super_tester.py
+
+      - name: "🧠 RUN 2: GOD MODE CHAOS (Absolute System Test)"
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: xvfb-run -a python -u tests/stress_lab/GOD_MODE_chaos.py
+
+      - name: "🔥 RUN 3: ULTRA SYSTEM INTEGRITY (Architectural Chaos)"
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: xvfb-run -a python -u tests/tests/system_integrity/ULTRA_SYSTEM_TEST.py
+
+      - name: "🛡️ RUN 4: ENDURANCE & ENVIRONMENT (Extreme Survival)"
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: xvfb-run -a python -u tests/tests/system_integrity/ENDURANCE_TEST.py
+
+      - name: "📡 RUN 5: TELEGRAM & AI PIPELINE TEST"
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: xvfb-run -a python -u tests/tests/system_integrity/TELEGRAM_AI_PIPELINE_TEST.py

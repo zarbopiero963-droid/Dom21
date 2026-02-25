@@ -1,0 +1,44 @@
+name: 🏆 Master UI & Chaos Audit
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # Permette di avviarlo manualmente
+
+jobs:
+  ui-chaos-certification:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: 🐍 Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 🖥️ Installa Monitor Virtuale (Xvfb & Dipendenze Qt)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 libxcb-shape0 libegl1 libgl1 libxcb-cursor0
+
+      - name: 📦 Installa Dipendenze Python
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-qt psutil
+          playwright install chromium
+
+      - name: 🎨 1. MASTER UI TEST (Test Interfaccia con Pytest-Qt)
+        # xvfb-run crea lo schermo virtuale dove PySide6 andrà a "disegnare" la UI
+        run: xvfb-run --auto-servernum pytest tests/tests/ui/MASTER_UI_TEST.py -v
+
+      - name: 🔥 2. REAL ATTACK TEST (Chaos Engineering)
+        run: python tests/tests/system_integrity/REAL_ATTACK_TEST.py
+
+      - name: 🧠 3. MINI-SOAK TEST (Stress Test RAM)
+        # NOTA: Su GitHub Actions c'è un limite di 6 ore per i job gratuiti.
+        # Il test durerà 2 minuti come impostato di default nello script per verificare memory leak istantanei.
+        run: python tests/tests/system_integrity/SOAK_24H_TEST.py
