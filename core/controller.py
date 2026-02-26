@@ -279,10 +279,14 @@ class SuperAgentController(QObject):
                     pending = self.money_manager.db.pending()
                     now = int(time.time())
                     for p in pending:
+                        # 🔴 FIX 2PC: Il Watchdog DEVE ignorare le PLACED. Rimborsa solo le RESERVED fantasma.
+                        if p.get("status") != "RESERVED": 
+                            continue 
+                            
                         ts = p.get("timestamp")
                         tx_id = p.get("tx_id")
                         if ts and (now - int(ts)) > 180:
-                            self.logger.critical(f"🧟 Zombie TX rilevata >3min: {tx_id[:8]} → Tentativo Refund automatico.")
+                            self.logger.critical(f"🧟 Zombie TX (RESERVED) rilevata >3min: {tx_id[:8]} → Tentativo Refund automatico.")
                             try:
                                 self.money_manager.refund(tx_id)
                             except Exception as e:
