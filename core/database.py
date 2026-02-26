@@ -167,6 +167,11 @@ class Database:
                     self.conn.execute("ROLLBACK")
                     raise
 
+    # 🛑 GET PLACED TRANSACTIONS (Per il test GOD_MODE_V2 e boot logic)
+    def get_unsettled_placed(self):
+        with self._lock:
+            return [dict(r) for r in self.conn.execute("SELECT * FROM journal WHERE status='PLACED'").fetchall()]
+
     def pending(self):
         with self._lock: 
             return [dict(r) for r in self.conn.execute("SELECT * FROM journal WHERE status IN ('RESERVED', 'PLACED') ORDER BY timestamp ASC").fetchall()]
