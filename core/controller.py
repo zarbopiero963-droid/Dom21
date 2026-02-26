@@ -104,11 +104,31 @@ class SuperAgentController(QObject):
 
     def stop_listening(self):
         if not self.is_running: return
-        self.logger.warning("🔴 STOP MOTORE")
+        self.logger.warning("🔴 STOP MOTORE: Blocco ricezione nuovi segnali.")
+        
+        # 1. Chiudiamo le porte ai nuovi segnali
         self.is_running = False
         self.engine.betting_enabled = False
+        
+        # 🛡️ 2. FIX: GRACEFUL SHUTDOWN (Chiusura Morbida)
+        # Sfruttiamo il semaforo per attendere che l'Engine finisca 
+        # qualsiasi bet che è già in fase di piazzamento.
+        self.logger.info("⏳ Graceful Shutdown: attesa completamento operazioni in corso...")
+        try:
+            if hasattr(self.engine, 'sem'):
+                # Chiediamo il semaforo (che sarà occupato se c'è una bet in corso).
+                # Aspettiamo massimo 60 secondi prima di forzare.
+                self.engine.sem.acquire(timeout=60.0)
+                self.engine.sem.release()
+        except Exception as e:
+            self.logger.error(f"Errore durante Graceful Shutdown: {e}")
+            
+        self.logger.info("🛑 Motore fermato in sicurezza. Nessuna scommessa troncata.")
+
+        # 3. Spegniamo i worker esterni
         if self.telegram:
-            self.telegram.stop()
+            try: self.telegram.stop()
+            except: pass
 
     def _load_robots(self):
         return RobotManager().all()
