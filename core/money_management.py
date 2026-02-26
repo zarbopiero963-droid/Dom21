@@ -8,11 +8,13 @@ import time
 import os
 import yaml
 import hashlib
+import re
 from pathlib import Path
 
 def norm_teams(t):
-    # 🔴 FIX 5.2: Normalizzazione e Hash per Anti-Duplicazione esatta
-    return hashlib.sha1(''.join(sorted(str(t).lower().replace(' ','').split('-'))).encode()).hexdigest()
+    # 🔴 FIX 5.2 & PATCH 3: Normalizzazione assoluta con Regex per Anti-Duplicazione esatta
+    sanitized = re.sub(r'\W+', '', str(t).lower())
+    return hashlib.sha1(sanitized.encode()).hexdigest()
 
 class MoneyManager:
     def __init__(self, db):
@@ -135,12 +137,17 @@ class MoneyManager:
             if self.pending(): return
             db_bal, _ = self.get_bankroll_and_peak()
             
-            # 🔴 FIX 5.3: Hysteresis
+            # 🔴 FIX 5.3 & PATCH 4: Hysteresis con Reset Tavoli Quantitativo
             if abs(db_bal - real_balance) > 1.0:
                 self.drift_count += 1
                 if self.drift_count >= 3:
                     self.db.update_bankroll(real_balance)
-                    self.logger.info(f"🔄 Reconciled: {real_balance:.2f}")
+                    
+                    # RESET TAVOLI: Allinea la matematica al nuovo saldo
+                    for t in self.db.get_roserpina_tables():
+                        self.db.update_roserpina_table(t["table_id"], -t["profit"], -t["loss"], 0)
+                        
+                    self.logger.info(f"🔄 Reconciled: {real_balance:.2f} e Tavoli Resettati.")
                     self.drift_count = 0
             else:
                 self.drift_count = 0
