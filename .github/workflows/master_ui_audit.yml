@@ -39,3 +39,6 @@ jobs:
 
       - name: 🧠 3. MINI-SOAK TEST (Stress Test RAM)
         run: PYTHONPATH=${{ github.workspace }} python tests/tests/system_integrity/SOAK_24H_TEST.py
+
+      - name: 👑 4. GOD MODE V2 (Hedge Fund Chaos Engine)
+        run: PYTHONPATH=${{ github.workspace }} xvfb-run -a python -u tests/stress_lab/GOD_MODE_V2_chaos.py
