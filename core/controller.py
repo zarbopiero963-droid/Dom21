@@ -41,6 +41,16 @@ class SuperAgentController(QObject):
         except Exception as e:
             self.logger.error(f"Recovery RESERVED fallita: {e}")
 
+        # 🔴 RECOVERY BET PLACED NON CHIUSE (Allineamento Test/Realtà)
+        try:
+            placed = self.db.get_unsettled_placed()
+            if placed:
+                self.logger.critical(f"♻️ RECOVERY: Trovate {len(placed)} PLACED post-crash.")
+                self.logger.critical("⚠️ LE SCOMMESSE RESTANO PLACED: Sarà il check_settled_bets a verificare l'esito reale.")
+                # NESSUN VOID QUI. IL VOID QUI È BANCAROTTA.
+        except Exception as e:
+            self.logger.error(f"Placed recovery error: {e}")
+
         self.money_manager = MoneyManager(self.db)
         
         self._worker_lock = threading.Lock()
