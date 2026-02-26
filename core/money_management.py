@@ -88,21 +88,24 @@ class MoneyManager:
             
             stake = round(stake, 2)
             tx = str(uuid.uuid4())
-            self.db.reserve(tx, stake, table_id=t_id, teams=target_hash)
+            
+            # 🔴 PATCH 1: Iniezione Hash per DB-Level Lock
+            self.db.reserve(tx, stake, table_id=t_id, teams=teams, match_hash=target_hash)
             self.tx_memory[tx] = {"table_id": t_id, "amount": stake, "teams": target_hash}
             
             return {"stake": stake, "table_id": t_id, "tx_id": tx}
 
     # Helper wrapper compatibilità
-    def get_stake(self, odds, teams=""): 
-        return self.get_stake_and_reserve(odds, teams)
-        
+    def get_stake(self, odds, teams=""): return self.get_stake_and_reserve(odds, teams)
+    
     def reserve(self, amount, table_id=1, teams=""):
         """Gestisce le scritture dirette per la modalità Stake Fisso in thread-safety"""
         with self._lock:
             tx = str(uuid.uuid4())
             target_hash = norm_teams(teams) if teams else ""
-            self.db.reserve(tx, amount, table_id=table_id, teams=target_hash)
+            
+            # 🔴 PATCH 1: Iniezione Hash per DB-Level Lock
+            self.db.reserve(tx, amount, table_id=table_id, teams=teams, match_hash=target_hash)
             self.tx_memory[tx] = {"table_id": table_id, "amount": amount, "teams": target_hash}
             return tx
 
