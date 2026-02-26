@@ -235,6 +235,8 @@ class ExecutionEngine:
                         bet_ok = self.executor.place_bet(teams, market, stake)
                         if bet_ok:
                             bet_placed = True  # 🔴 FIX FINALE ISTITUZIONALE: Set immediato
+                            # 🔒 Commit immediato post-bet (Crash-Safe assoluto)
+                            money_manager.db.commit(tx_id, 0.0)
                         self.last_activity = time.time()
                     except Exception as e:
                         if not bet_placed:  # 🔴 Nessun refund fatale se bet_placed è True
