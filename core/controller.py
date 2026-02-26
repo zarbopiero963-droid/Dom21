@@ -274,6 +274,23 @@ class SuperAgentController(QObject):
                             self.money_manager.db = self.db
                         except Exception: pass
 
+            # 🔴 PATCH 2: FINANCIAL ZOMBIE CLEANUP (Ogni ~5 min)
+            if loops_count % 10 == 0:
+                try:
+                    pending = self.money_manager.db.pending()
+                    now = int(time.time())
+                    for p in pending:
+                        ts = p.get("timestamp")
+                        tx_id = p.get("tx_id")
+                        if ts and (now - int(ts)) > 180:  # 3 minuti limite assoluto
+                            self.logger.critical(f"🧟 Zombie TX rilevata >3min: {tx_id[:8]} → Refund automatico.")
+                            try:
+                                self.money_manager.refund(tx_id)
+                            except Exception as e:
+                                self.logger.error(f"Errore refund zombie: {e}")
+                except Exception:
+                    pass
+
             if loops_count % 20 == 0:
                 if not self.money_manager.db.pending():
                     with self._worker_lock:
