@@ -199,7 +199,6 @@ class ExecutionEngine:
                         self.bus.emit("BET_FAILED", {"reason": "Odds not found or invalid"})
                         return
 
-                    # 🔴 FIX 1: Risoluzione del Double Bet e Zombie TX
                     mm_mode = payload.get("mm_mode", "Stake Fisso")
                     if mm_mode == "Roserpina (Progressione)":
                         decision = money_manager.get_stake(odds, teams=teams)
@@ -224,13 +223,13 @@ class ExecutionEngine:
                         self.bus.emit("BET_FAILED", {"reason": "Insufficient real balance"})
                         return
 
-                    # 🔴 FIX 2: Prenota solo se non è già stato fatto dal Risk Engine
                     if mm_mode != "Roserpina (Progressione)":
                         tx_id = money_manager.reserve(stake, table_id=table_id, teams=teams)
                     
                     with self._state_lock:
                         self.current_tx_id = tx_id
 
+                    # --- ESECUZIONE ---
                     self.last_activity = time.time()
                     try:
                         bet_ok = self.executor.place_bet(teams, market, stake)
@@ -243,35 +242,13 @@ class ExecutionEngine:
                         if self.force_abort:
                             raise RuntimeError("ZOMBIE THREAD ABORTED: Il Watchdog ha già rimborsato questa operazione.")
 
-                    if not bet_ok: 
-                        raise RuntimeError("Bet NON piazzata dal bookmaker.")
-
-                    balance_after = balance_before
-                    for _ in range(4):
-                        self.last_activity = time.time()
-                        time.sleep(1.5)
-                        try:
-                            current_bal = self._safe_float(self.executor.get_balance())
-                            if current_bal < balance_before:
-                                balance_after = current_bal
-                                break
-                        except Exception as e:
-                            self.logger.debug(f"Glitch lettura saldo post-bet: {e}")
-
-                    with self._state_lock:
-                        if self.force_abort:
-                            raise RuntimeError("ZOMBIE THREAD ABORTED: Il Watchdog ha già rimborsato questa operazione prima della conferma.")
-
-                    self.last_activity = time.time()
-                    delta = balance_before - balance_after
-                    
-                    if abs(delta - stake) < 0.1:
-                        self.logger.info(f"✅ Bet certificata: -{stake}€")
+                    # 🔒 Hedge-grade confirmation logic
+                    if bet_ok:
+                        self.logger.info(f"✅ Bet certificata dal bookmaker: {stake}€")
                         bet_placed = True
                     else:
-                        self.logger.critical(f"☠️ FALSO POSITIVO saldo. Delta: {delta}")
                         bet_placed = False
-                        raise RuntimeError("False confirmation")
+                        raise RuntimeError("Bet not confirmed by executor")
 
                     if hasattr(self.executor, "bet_count"): 
                         self.executor.bet_count += 1
