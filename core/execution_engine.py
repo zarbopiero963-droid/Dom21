@@ -118,7 +118,6 @@ class ExecutionEngine:
     def process_signal(self, payload: Dict[str, Any], money_manager) -> None:
         self.last_activity = time.time()
         
-        # 🟡 FIX FINALE: Pre-flight cleanup dello State Leak
         with self._state_lock:
             if self.force_abort:
                 self.logger.warning("⚠️ Reset force_abort stale flag (pre-flight cleanup)")
@@ -200,12 +199,15 @@ class ExecutionEngine:
                         self.bus.emit("BET_FAILED", {"reason": "Odds not found or invalid"})
                         return
 
+                    # 🔴 FIX 1: Risoluzione del Double Bet e Zombie TX
                     mm_mode = payload.get("mm_mode", "Stake Fisso")
                     if mm_mode == "Roserpina (Progressione)":
                         decision = money_manager.get_stake(odds, teams=teams)
                         stake = decision.get("stake", 0.0)
                         table_id = decision.get("table_id", 0)
-                        if stake <= 0 or table_id == 0:
+                        tx_id = decision.get("tx_id") # Estrae l'ID GIA' PRENOTATO
+                        
+                        if stake <= 0 or table_id == 0 or not tx_id:
                             self.logger.warning("⛔ Risk Engine ha bloccato la scommessa.")
                             self.bus.emit("BET_FAILED", {"reason": "Risk Engine Blocked"})
                             return
@@ -218,10 +220,13 @@ class ExecutionEngine:
                     balance_before = self._safe_float(self.executor.get_balance())
                     if balance_before > 0 and balance_before < stake:
                         self.logger.error(f"❌ Saldo insufficiente ({balance_before} < {stake})")
+                        if tx_id: money_manager.refund(tx_id) # Uccide lo zombie se fallisce qui
                         self.bus.emit("BET_FAILED", {"reason": "Insufficient real balance"})
                         return
 
-                    tx_id = money_manager.reserve(stake, table_id=table_id, teams=teams)
+                    # 🔴 FIX 2: Prenota solo se non è già stato fatto dal Risk Engine
+                    if mm_mode != "Roserpina (Progressione)":
+                        tx_id = money_manager.reserve(stake, table_id=table_id, teams=teams)
                     
                     with self._state_lock:
                         self.current_tx_id = tx_id
