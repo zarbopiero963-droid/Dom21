@@ -100,23 +100,26 @@ original_sleep(0.5)
 if not alive["v"]: fail("WORKER", "Thread morto dopo eccezione nella coda!")
 else: ok("Worker Thread IMMORTALE")
 
+# --- INIZIO FIX SPAM/RACE CONDITION ---
 err = {"v": False}
-def spam():
+def spam(thread_id):
     try:
-        for _ in range(50):
+        for i in range(50):
             controller.money_manager.bankroll()
-            # 🛡️ FIX 1: Aggiunto table_id obbligatorio per il nuovo motore Roserpina
-            controller.money_manager.reserve(1.0, table_id=1)
+            # 🛡️ FIX: Diamo un nome univoco a ogni bet per evitare il blocco Anti-Doppione!
+            fake_match = f"SPAM_TEAM_{thread_id}_MATCH_{i}"
+            controller.money_manager.reserve(1.0, table_id=1, teams=fake_match)
     except Exception as e: 
         logger.error(f"Errore Spam: {e}")
         err["v"] = True
 
-threads = [threading.Thread(target=spam) for _ in range(15)]
+threads = [threading.Thread(target=spam, args=(t_id,)) for t_id in range(15)]
 for t in threads: t.start()
 for t in threads: t.join()
 
 if err["v"]: fail("DATABASE", "Race Condition su scrittura SQLite!")
 else: ok("Database WAL Mode: CONCORRENZA PERFETTA")
+# --- FINE FIX SPAM/RACE CONDITION ---
 
 for p in controller.money_manager.db.pending(): controller.money_manager.refund(p['tx_id'])
 
