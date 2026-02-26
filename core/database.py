@@ -21,14 +21,36 @@ class Database:
 
     def _init_db(self):
         with self._lock:
-            self.conn.execute("CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY AUTOINCREMENT, tx_id TEXT UNIQUE, amount REAL, status TEXT, payout REAL DEFAULT 0, timestamp INTEGER, table_id INTEGER DEFAULT 1, teams TEXT DEFAULT '')")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS journal (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                    tx_id TEXT UNIQUE, 
+                    amount REAL, 
+                    status TEXT, 
+                    payout REAL DEFAULT 0, 
+                    timestamp INTEGER, 
+                    table_id INTEGER DEFAULT 1, 
+                    teams TEXT DEFAULT '',
+                    match_hash TEXT DEFAULT ''
+                )
+            """)
             # 🔴 FIX 6.1: Indici per prevenire timeout letali dopo mesi di utilizzo
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON journal(status);")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ts ON journal(timestamp);")
+            
+            # 🔴 PATCH 1: Indice univoco parziale anti double-bet
+            self.conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_pending_match
+                ON journal(match_hash)
+                WHERE status = 'PENDING'
+            """)
 
+            # Migrazioni automatiche per DB esistenti
             try: self.conn.execute("ALTER TABLE journal ADD COLUMN table_id INTEGER DEFAULT 1")
             except: pass
             try: self.conn.execute("ALTER TABLE journal ADD COLUMN teams TEXT DEFAULT ''")
+            except: pass
+            try: self.conn.execute("ALTER TABLE journal ADD COLUMN match_hash TEXT DEFAULT ''")
             except: pass
 
             self.conn.execute("CREATE TABLE IF NOT EXISTS balance (id INTEGER PRIMARY KEY CHECK (id = 1), current_balance REAL, peak_balance REAL DEFAULT 1000.0)")
@@ -56,14 +78,33 @@ class Database:
                 self.conn.execute("COMMIT")
             except: self.conn.execute("ROLLBACK"); raise
 
-    def reserve(self, tx_id, amount, table_id=1, teams=""):
+    def reserve(self, tx_id, amount, table_id=1, teams="", match_hash=""):
         with self._lock:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
-                self.conn.execute("INSERT INTO journal (tx_id, amount, status, timestamp, table_id, teams) VALUES (?, ?, 'PENDING', ?, ?, ?)", (tx_id, float(amount), int(time.time()), table_id, teams))
-                self.conn.execute("UPDATE balance SET current_balance = current_balance - ? WHERE id = 1", (float(amount),))
+                # 🔴 BLOCCO ANTI DOUBLE BET DB-LEVEL
+                if match_hash:
+                    existing = self.conn.execute(
+                        "SELECT 1 FROM journal WHERE match_hash = ? AND status = 'PENDING'",
+                        (match_hash,)
+                    ).fetchone()
+                    if existing:
+                        self.conn.execute("ROLLBACK")
+                        raise ValueError("Duplicate pending match detected (DB-level lock)")
+
+                self.conn.execute("""
+                    INSERT INTO journal (tx_id, amount, status, timestamp, table_id, teams, match_hash)
+                    VALUES (?, ?, 'PENDING', ?, ?, ?, ?)
+                """, (tx_id, float(amount), int(time.time()), table_id, teams, match_hash))
+
+                self.conn.execute(
+                    "UPDATE balance SET current_balance = current_balance - ? WHERE id = 1",
+                    (float(amount),)
+                )
                 self.conn.execute("COMMIT")
-            except: self.conn.execute("ROLLBACK"); raise
+            except: 
+                self.conn.execute("ROLLBACK")
+                raise
 
     def commit(self, tx_id, payout):
         with self._lock:
