@@ -35,16 +35,16 @@ jobs:
         # xvfb-run crea lo schermo virtuale dove PySide6 andrà a "disegnare" la UI
         env:
           PYTHONPATH: .
-        run: xvfb-run --auto-servernum pytest tests/tests/ui/MASTER_UI_TEST.py -v
+        run: xvfb-run --auto-servernum python -m pytest tests/tests/ui/MASTER_UI_TEST.py -v
 
       - name: 🔥 2. REAL ATTACK TEST (Chaos Engineering)
         env:
           PYTHONPATH: .
-        run: python tests/tests/system_integrity/REAL_ATTACK_TEST.py
+        run: python -m tests.tests.system_integrity.REAL_ATTACK_TEST
 
       - name: 🧠 3. MINI-SOAK TEST (Stress Test RAM)
         # NOTA: Su GitHub Actions c'è un limite di 6 ore per i job gratuiti.
         # Il test durerà 2 minuti come impostato di default nello script per verificare memory leak istantanei.
         env:
           PYTHONPATH: .
-        run: python tests/tests/system_integrity/SOAK_24H_TEST.py
+        run: python -m tests.tests.system_integrity.SOAK_24H_TEST
