@@ -115,7 +115,7 @@ threads = [threading.Thread(target=spam) for _ in range(15)]
 for t in threads: t.start()
 for t in threads: t.join()
 
-if err["v"]: fail("DATABASE", "Race Condition!")
+if err["v"]: fail("DATABASE", "Race Condition su scrittura SQLite!")
 else: ok("Database WAL Mode: CONCORRENZA PERFETTA")
 
 for p in controller.money_manager.db.pending(): controller.money_manager.refund(p['tx_id'])
@@ -129,8 +129,18 @@ def crash_emit(ev, p):
 controller.engine.bus.emit = crash_emit
 controller.engine.process_signal({"teams": "A-B", "market": "1", "is_active": True}, controller.money_manager)
 after = controller.money_manager.bankroll()
-if after == before: fail("LEDGER", "CRITICO: Refund fantasma eseguito!")
-else: ok("Ledger INTEGRO")
+
+# 🔴 FIX 2PC: Controllo Finanziario Rigoroso per il GOD_MODE
+zombies_reserved = [p for p in controller.money_manager.db.pending() if p['status'] == 'RESERVED']
+zombies_placed = [p for p in controller.money_manager.db.pending() if p['status'] == 'PLACED']
+
+if len(zombies_reserved) > 0:
+    fail("DATABASE", f"Race Condition! Trovate {len(zombies_reserved)} RESERVED zombie (Fase 1 incompleta).")
+elif after == before: 
+    fail("LEDGER", "CRITICO: Refund fantasma eseguito su una PLACED!")
+else: 
+    ok(f"Ledger INTEGRO (Trovate {len(zombies_placed)} PLACED legittime post-crash)")
+
 controller.engine.bus.emit = orig_emit
 
 original_sleep(1)
