@@ -71,4 +71,230 @@ class SuperAgentController(QObject):
 
         threading.Thread(target=self._master_watchdog, daemon=True).start()
 
-# ... (Il resto di controller.py rimane invariato)
+    def start_listening(self):
+        if self.is_running or self.circuit_open:
+            self.logger.warning("Motore già attivo o Circuit Breaker APERTO.")
+            return
+
+        self.logger.info("🟢 MOTORE AVVIATO")
+        self.is_running = True
+        self.engine.betting_enabled = True
+
+        if not self._bus_started:
+            bus.start()
+            self._bus_started = True
+
+        with self._worker_lock:
+            if not getattr(self.worker, "running", False):
+                self.worker.start()
+                self.worker.start_time = time.monotonic()
+
+        if self.telegram and not getattr(self.telegram, "running", False):
+            self.telegram.start()
+
+    def stop_listening(self):
+        if not self.is_running: return
+        self.logger.warning("🔴 STOP MOTORE")
+        self.is_running = False
+        self.engine.betting_enabled = False
+        if self.telegram:
+            self.telegram.stop()
+
+    def _load_robots(self):
+        return RobotManager().all()
+
+    def _match_robot(self, payload, robot_config):
+        text = payload.get("raw_text", "").lower()
+        if not text: text = f"{payload.get('teams','')}".lower()
+        triggers = robot_config.get("trigger_words", [])
+        if isinstance(triggers, str): triggers = [t.strip() for t in triggers.split(",") if t.strip()]
+        excludes = robot_config.get("exclude_words", [])
+        if isinstance(excludes, str): excludes = [e.strip() for e in excludes.split(",") if e.strip()]
+        for ex in excludes:
+            if ex and ex.lower() in text: return False
+        if not triggers: return True
+        for t in triggers:
+            if t.lower() in text: return True
+        return False
+
+    def process_signal(self, payload):
+        if not self.is_running or self.circuit_open: return False
+        
+        if bus._pending > 30:
+            self.logger.warning("⚠️ Worker/Bus saturo (>30 task). Signal droppato.")
+            return False
+
+        if isinstance(payload, str):
+            payload = {"teams": "Auto", "market": "N/A", "raw_text": payload}
+
+        robots = self._load_robots()
+        if not robots: return False
+
+        for r in robots:
+            if not r.get("is_active", True): continue
+            if self._match_robot(payload, r):
+                payload["is_active"] = True
+                payload["robot_name"] = r.get("name")
+                payload["stake"] = r.get("stake", 2.0)
+                payload["mm_mode"] = r.get("mm_mode", "Stake Fisso")
+
+                with self._worker_lock:
+                    if getattr(self.worker, "running", False):
+                        self.worker.submit(self.engine.process_signal, payload, self.money_manager)
+                        return True
+                    else:
+                        self.logger.error("Worker spento durante l'invio del task")
+                        return False
+        return False
+
+    def handle_signal(self, signal):
+        return self.process_signal(signal)
+
+    def _nuclear_restart_worker(self):
+        if getattr(self, '_restarting', False): return
+        self._restarting = True
+        
+        try:
+            now = time.monotonic()
+            self.restart_timestamps = [t for t in self.restart_timestamps if now - t < 300]
+            self.restart_timestamps.append(now)
+            
+            if len(self.restart_timestamps) >= 3:
+                self.logger.critical("🛑 RESTART STORM (3 crash in 5m)! Attivazione RISK_OFF GLOBALE.")
+                self.circuit_open = True
+                self.stop_listening()
+                return
+
+            self.logger.critical("☢️ NUCLEAR RESTART: Riavvio forzato del Playwright Worker...")
+            with self._worker_lock:
+                try:
+                    self.worker.stop()
+                    time.sleep(2)
+                    
+                    for p in psutil.process_iter(['name']):
+                        try:
+                            n = (p.info['name'] or '').lower()
+                            if 'chromium' in n or 'chrome' in n:
+                                p.kill()
+                        except: pass
+
+                        self.worker = PlaywrightWorker(self.logger)
+                        allow_bets = self.config.get("betting", {}).get("allow_place", False)
+                        self.worker.executor = DomExecutorPlaywright(logger=self.logger, allow_place=allow_bets)
+                        self.engine.executor = self.worker.executor
+                        
+                        if self.is_running:
+                            self.worker.start()
+                            self.worker.start_time = time.monotonic()
+                            
+                        self.logger.info("♻️ Worker rigenerato con successo.")
+                except Exception as e:
+                    self.logger.error(f"Fallito Nuclear Restart: {e}")
+        finally:
+            self._restarting = False
+
+    def _on_bet_success(self, event): self.logger.info(f"✅ BET SUCCESS {event}")
+    def _on_bet_failed(self, event): self.logger.info(f"❌ BET FAILED {event}")
+
+    def _master_watchdog(self):
+        self.logger.info("👁️ Master Watchdog attivo")
+        loops_count = 0
+        
+        while True:
+            time.sleep(30)
+            loops_count += 1
+            self.last_heartbeat = time.monotonic()
+            
+            try:
+                with open("C:/tmp/roserpina_controller_heartbeat" if os.name == 'nt' else "/tmp/roserpina_controller_heartbeat", "w") as f:
+                    f.write(str(time.time()))
+                    f.flush()
+                    os.fsync(f.fileno())
+            except Exception: pass
+
+            if not self.is_running: continue
+
+            if loops_count % 2 == 0:
+                try:
+                    process = psutil.Process(os.getpid())
+                    mem_mb = process.memory_info().rss / (1024 * 1024)
+                    if mem_mb > 900.0:
+                        self.logger.critical(f"💀 FATAL OOM RISK: RAM a {mem_mb:.1f}MB. FULL OS RESTART RICHIESTO.")
+                        os._exit(1)
+                except Exception: pass
+
+            if self.telegram and not getattr(self.telegram, "running", False):
+                self.logger.critical("📡 Telegram Zombie. Riavvio...")
+                try: self.telegram.stop()
+                except: pass
+                time.sleep(1)
+                try: self.telegram.start()
+                except: pass
+
+            if hasattr(self.worker, 'last_worker_heartbeat'):
+                elapsed_heartbeat = time.monotonic() - self.worker.last_worker_heartbeat
+                if elapsed_heartbeat > 120:
+                    worker_uptime = time.monotonic() - getattr(self.worker, "start_time", time.monotonic())
+                    if worker_uptime >= 60:
+                        self.logger.critical(f"💀 WORKER FREEZE DETECTED ({elapsed_heartbeat:.0f}s).")
+                        self._nuclear_restart_worker()
+
+            if loops_count % 4 == 0:
+                try:
+                    if self.money_manager.db.pending():
+                        with self._worker_lock:
+                            if getattr(self.worker, "running", False):
+                                def check_job():
+                                    try:
+                                        fresh = self.money_manager.db.pending()
+                                        if not fresh: return
+                                        res = self.worker.executor.check_settled_bets()
+                                        if not res or not res.get("status"): return
+                                        s, p, tx = res["status"], res.get("payout", 0.0), fresh[0]["tx_id"]
+                                        if s == "WIN": self.money_manager.win(tx, p)
+                                        elif s == "LOSS": self.money_manager.loss(tx)
+                                        elif s == "VOID": self.money_manager.refund(tx)
+                                    except Exception: pass
+                                self.worker.submit(check_job)
+                except sqlite3.OperationalError as e:
+                    if "database is locked" in str(e).lower():
+                        try:
+                            self.db.close()
+                            self.db = Database()
+                            self.money_manager.db = self.db
+                        except Exception: pass
+
+            if loops_count % 10 == 0:
+                try:
+                    pending = self.money_manager.db.pending()
+                    now = int(time.time())
+                    for p in pending:
+                        ts = p.get("timestamp")
+                        tx_id = p.get("tx_id")
+                        if ts and (now - int(ts)) > 180:
+                            self.logger.critical(f"🧟 Zombie TX rilevata >3min: {tx_id[:8]} → Tentativo Refund automatico.")
+                            try:
+                                self.money_manager.refund(tx_id)
+                            except Exception as e:
+                                self.logger.error(f"Errore refund zombie: {e}")
+                except Exception:
+                    pass
+
+            if loops_count % 20 == 0:
+                if not self.money_manager.db.pending():
+                    with self._worker_lock:
+                        if getattr(self.worker, "running", False):
+                            def reconcile_job():
+                                try:
+                                    bal = self.worker.executor.get_balance()
+                                    if bal is not None: self.money_manager.reconcile_balances(bal)
+                                except Exception: pass
+                            self.worker.submit(reconcile_job)
+
+            if loops_count >= 240:
+                loops_count = 0  
+                try:
+                    self.db.maintain_wal()
+                    if not self.money_manager.db.pending():
+                        self.db.conn.execute("VACUUM")
+                except Exception: pass
