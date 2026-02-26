@@ -17,10 +17,7 @@ class Database:
         self.conn.execute("PRAGMA synchronous=NORMAL;")
         self.conn.execute("PRAGMA busy_timeout=5000;")
         
-        # 🔒 Lock Logico per le letture/stato interno
         self._lock = threading.RLock()
-        
-        # 🛑 FIX FINALE: Mutex globale assoluto per serializzare le scritture su SQLite
         self._write_lock = threading.Lock()
         
         self._init_db()
@@ -44,13 +41,13 @@ class Database:
                 self.conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON journal(status);")
                 self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ts ON journal(timestamp);")
                 
+                # Anti-duplicate copre sia RESERVED che PLACED
                 self.conn.execute("""
                     CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_pending_match
                     ON journal(match_hash)
-                    WHERE status = 'PENDING'
+                    WHERE status IN ('RESERVED', 'PLACED')
                 """)
 
-                # Migrazioni automatiche
                 try: self.conn.execute("ALTER TABLE journal ADD COLUMN table_id INTEGER DEFAULT 1")
                 except: pass
                 try: self.conn.execute("ALTER TABLE journal ADD COLUMN teams TEXT DEFAULT ''")
@@ -75,7 +72,7 @@ class Database:
             return (float(row["current_balance"]), float(row["peak_balance"])) if row else (0.0, 0.0)
 
     def update_bankroll(self, amount):
-        with self._write_lock:  # ← FIX CRITICO
+        with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
@@ -85,23 +82,24 @@ class Database:
                     self.conn.execute("ROLLBACK")
                     raise
 
+    # 🛑 FASE 1: RESERVED
     def reserve(self, tx_id, amount, table_id=1, teams="", match_hash=""):
-        with self._write_lock:  # ← FIX CRITICO
+        with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
                     if match_hash:
                         existing = self.conn.execute(
-                            "SELECT 1 FROM journal WHERE match_hash = ? AND status = 'PENDING'",
+                            "SELECT 1 FROM journal WHERE match_hash = ? AND status IN ('RESERVED', 'PLACED')",
                             (match_hash,)
                         ).fetchone()
                         if existing:
                             self.conn.execute("ROLLBACK")
-                            raise ValueError("Duplicate pending match detected (DB-level lock)")
+                            raise ValueError("Duplicate active match detected")
 
                     self.conn.execute("""
                         INSERT INTO journal (tx_id, amount, status, timestamp, table_id, teams, match_hash)
-                        VALUES (?, ?, 'PENDING', ?, ?, ?, ?)
+                        VALUES (?, ?, 'RESERVED', ?, ?, ?, ?)
                     """, (tx_id, float(amount), int(time.time()), table_id, teams, match_hash))
 
                     self.conn.execute(
@@ -113,8 +111,21 @@ class Database:
                     self.conn.execute("ROLLBACK")
                     raise
 
+    # 🛑 FASE 2: PLACED (Dopo ACK del Bookmaker)
+    def mark_placed(self, tx_id):
+        with self._write_lock:
+            with self._lock:
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self.conn.execute("UPDATE journal SET status='PLACED' WHERE tx_id=?", (tx_id,))
+                    self.conn.execute("COMMIT")
+                except:
+                    self.conn.execute("ROLLBACK")
+                    raise
+
+    # 🛑 FASE 3: SETTLED (Dopo esito partita)
     def commit(self, tx_id, payout):
-        with self._write_lock:  # ← FIX CRITICO
+        with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
@@ -126,12 +137,13 @@ class Database:
                     self.conn.execute("ROLLBACK")
                     raise
 
+    # 🛑 ROLLBACK SICURO (Annulla solo le RESERVED)
     def rollback(self, tx_id):
-        with self._write_lock:  # ← FIX CRITICO
+        with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
-                    row = self.conn.execute("SELECT amount FROM journal WHERE tx_id = ? AND status = 'PENDING'", (tx_id,)).fetchone()
+                    row = self.conn.execute("SELECT amount FROM journal WHERE tx_id = ? AND status = 'RESERVED'", (tx_id,)).fetchone()
                     if row:
                         self.conn.execute("UPDATE journal SET status = 'VOID' WHERE tx_id = ?", (tx_id,))
                         self.conn.execute("UPDATE balance SET current_balance = current_balance + ? WHERE id = 1", (float(row["amount"]),))
@@ -140,16 +152,31 @@ class Database:
                     self.conn.execute("ROLLBACK")
                     raise
 
+    # 🛑 RECOVERY BOOT: Spazza via gli zombie pre-crash
+    def recover_reserved(self):
+        with self._write_lock:
+            with self._lock:
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    rows = self.conn.execute("SELECT tx_id, amount FROM journal WHERE status='RESERVED'").fetchall()
+                    for r in rows:
+                        self.conn.execute("UPDATE journal SET status='VOID' WHERE tx_id=?", (r["tx_id"],))
+                        self.conn.execute("UPDATE balance SET current_balance = current_balance + ? WHERE id = 1", (float(r["amount"]),))
+                    self.conn.execute("COMMIT")
+                except:
+                    self.conn.execute("ROLLBACK")
+                    raise
+
     def pending(self):
         with self._lock: 
-            return [dict(r) for r in self.conn.execute("SELECT * FROM journal WHERE status = 'PENDING' ORDER BY timestamp ASC").fetchall()]
+            return [dict(r) for r in self.conn.execute("SELECT * FROM journal WHERE status IN ('RESERVED', 'PLACED') ORDER BY timestamp ASC").fetchall()]
 
     def get_roserpina_tables(self):
         with self._lock: 
             return [dict(r) for r in self.conn.execute("SELECT * FROM roserpina_tables ORDER BY table_id ASC").fetchall()]
 
     def update_roserpina_table(self, table_id, profit_delta, loss_delta, in_recovery):
-        with self._write_lock:  # ← FIX CRITICO
+        with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
