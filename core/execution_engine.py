@@ -196,8 +196,8 @@ class ExecutionEngine:
                             raise RuntimeError("Bet NON piazzata")
                             
                         # 🔒 PASSAGGIO FASE 2: Da RESERVED a PLACED
+                        bet_placed = True  # <--- SPOSTATO QUI: PRIMA DEL DB
                         money_manager.db.mark_placed(tx_id)
-                        bet_placed = True
                         self.last_activity = time.time()
                         
                     except Exception as e:
