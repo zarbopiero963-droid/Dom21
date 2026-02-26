@@ -32,16 +32,10 @@ jobs:
           playwright install chromium
 
       - name: 🎨 1. MASTER UI TEST (Test Interfaccia con Pytest-Qt)
-        run: |
-          export PYTHONPATH=$(pwd)
-          xvfb-run --auto-servernum pytest tests/tests/ui/MASTER_UI_TEST.py -v
+        run: PYTHONPATH=${{ github.workspace }} xvfb-run --auto-servernum python -m pytest tests/tests/ui/MASTER_UI_TEST.py -v
 
       - name: 🔥 2. REAL ATTACK TEST (Chaos Engineering)
-        run: |
-          export PYTHONPATH=$(pwd)
-          python tests/tests/system_integrity/REAL_ATTACK_TEST.py
+        run: PYTHONPATH=${{ github.workspace }} python tests/tests/system_integrity/REAL_ATTACK_TEST.py
 
       - name: 🧠 3. MINI-SOAK TEST (Stress Test RAM)
-        run: |
-          export PYTHONPATH=$(pwd)
-          python tests/tests/system_integrity/SOAK_24H_TEST.py
+        run: PYTHONPATH=${{ github.workspace }} python tests/tests/system_integrity/SOAK_24H_TEST.py
