@@ -204,7 +204,7 @@ class ExecutionEngine:
                         decision = money_manager.get_stake(odds, teams=teams)
                         stake = decision.get("stake", 0.0)
                         table_id = decision.get("table_id", 0)
-                        tx_id = decision.get("tx_id") # Estrae l'ID GIA' PRENOTATO
+                        tx_id = decision.get("tx_id")
                         
                         if stake <= 0 or table_id == 0 or not tx_id:
                             self.logger.warning("⛔ Risk Engine ha bloccato la scommessa.")
@@ -219,7 +219,7 @@ class ExecutionEngine:
                     balance_before = self._safe_float(self.executor.get_balance())
                     if balance_before > 0 and balance_before < stake:
                         self.logger.error(f"❌ Saldo insufficiente ({balance_before} < {stake})")
-                        if tx_id: money_manager.refund(tx_id) # Uccide lo zombie se fallisce qui
+                        if tx_id: money_manager.refund(tx_id)
                         self.bus.emit("BET_FAILED", {"reason": "Insufficient real balance"})
                         return
 
@@ -229,25 +229,26 @@ class ExecutionEngine:
                     with self._state_lock:
                         self.current_tx_id = tx_id
 
-                    # --- ESECUZIONE ---
+                    # --- ESECUZIONE (Hedge-Grade Patch) ---
                     self.last_activity = time.time()
                     try:
                         bet_ok = self.executor.place_bet(teams, market, stake)
+                        if bet_ok:
+                            bet_placed = True  # 🔴 FIX FINALE ISTITUZIONALE: Set immediato
                         self.last_activity = time.time()
                     except Exception as e:
-                        money_manager.refund(tx_id)
+                        if not bet_placed:  # 🔴 Nessun refund fatale se bet_placed è True
+                            money_manager.refund(tx_id)
                         raise
 
                     with self._state_lock:
                         if self.force_abort:
                             raise RuntimeError("ZOMBIE THREAD ABORTED: Il Watchdog ha già rimborsato questa operazione.")
 
-                    # 🔒 Hedge-grade confirmation logic
-                    if bet_ok:
+                    # 🔒 Conferma logica
+                    if bet_placed:
                         self.logger.info(f"✅ Bet certificata dal bookmaker: {stake}€")
-                        bet_placed = True
                     else:
-                        bet_placed = False
                         raise RuntimeError("Bet not confirmed by executor")
 
                     if hasattr(self.executor, "bet_count"): 
@@ -267,12 +268,12 @@ class ExecutionEngine:
                     if not is_watchdog_abort:
                         self.trip_breaker(f"Crash runtime: {e}")
                         
-                        if tx_id:
-                            if not bet_placed:
-                                money_manager.refund(tx_id)
-                                self.logger.warning(f"🔄 Rollback TX {tx_id[:8]}")
-                            else:
-                                self.logger.critical(f"☠️ Bet reale effettuata {tx_id[:8]}")
+                        # 🔴 FIX FINALE: Distinzione vitale tra abort sicuro e bet reale
+                        if tx_id and not bet_placed:
+                            money_manager.refund(tx_id)
+                            self.logger.warning(f"🔄 Rollback TX {tx_id[:8]}")
+                        elif tx_id and bet_placed:
+                            self.logger.critical(f"☠️ Bet reale effettuata {tx_id[:8]} - Nessun Rollback!")
 
                     if hasattr(self.executor, "save_blackbox"):
                         try:
