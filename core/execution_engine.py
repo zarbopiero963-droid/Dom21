@@ -30,7 +30,10 @@ class ExecutionEngine:
         tx_placed = False
         
         teams = payload.get("teams", "Unknown")
-        stake = float(payload.get("stake", 2.0))
+        
+        # 🛡️ FIX 2: Parsing robusto dello stake contro payload corrotti o nulli
+        raw_stake = payload.get("stake")
+        stake = float(raw_stake) if raw_stake is not None else 2.0
 
         try:
             with self.sem:
@@ -83,7 +86,7 @@ class ExecutionEngine:
                 final_exc = Exception("PRE_COMMIT UNCERTAINTY")
             elif actual_side_effect or tx_placed:
                 # 🚨 PANIC PATH: Click avvenuto ma DB update fallito
-                final_exc = Exception("PANIC LEDGER TRIGGERED")
+                final_exc = Exception("PANIC Ledger Triggered")
                 money_manager.db.write_panic_file(tx_id)
 
             self.breaker.record_failure(final_exc)
