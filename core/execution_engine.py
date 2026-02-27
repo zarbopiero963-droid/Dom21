@@ -14,7 +14,6 @@ class ExecutionEngine:
         self.logger = logger or logging.getLogger("ExecutionEngine")
         self.betting_enabled = False
         
-        # Inizializziamo il nuovo Breaker Adattivo
         self.breaker = CircuitBreaker(logger=self.logger)
         
         self.sem = threading.Semaphore(1)
@@ -59,7 +58,6 @@ class ExecutionEngine:
                     self.current_tx_id = None
                     self.current_money_manager = None
                 
-                # Registriamo l'errore come operativo nel nuovo breaker
                 self.breaker.record_failure(RuntimeError("DEADLOCK BET TIMEOUT"))
 
     def _safe_float(self, value: Any) -> float:
@@ -82,7 +80,6 @@ class ExecutionEngine:
         if not getattr(self, "betting_enabled", False) or not payload.get("is_active", True): 
             return
 
-        # 🛡️ INTERROGAZIONE DEL BREAKER ADATTIVO
         if not self.breaker.allow_request():
             self.logger.warning(f"🛑 Breaker {self.breaker.state.name}: Trading bloccato o in cooldown. Segnale ignorato.")
             return
@@ -167,14 +164,12 @@ class ExecutionEngine:
                     
                     with self._state_lock: self.current_tx_id = tx_id
 
-                    # 🛑 ESECUZIONE (2-Phase Commit Patch)
                     self.last_activity = time.time()
                     try:
                         bet_ok = self.executor.place_bet(teams, market, stake)
                         if not bet_ok:
                             raise RuntimeError("Timeout o errore click place_bet")
                             
-                        # 🔒 PASSAGGIO FASE 2: Da RESERVED a PLACED
                         bet_placed = True
                         money_manager.db.mark_placed(tx_id)
                         self.last_activity = time.time()
@@ -191,14 +186,12 @@ class ExecutionEngine:
 
                     if hasattr(self.executor, "bet_count"): self.executor.bet_count += 1
                         
-                    # 🟢 SUCCESS: Informiamo il breaker che è andato tutto liscio!
                     self.breaker.record_success()
-                    
                     self.bus.emit("BET_SUCCESS", {"tx_id": tx_id, "teams": teams, "stake": stake, "odds": odds})
 
                 except Exception as e:
-                    # 🔴 FAILURE: Informiamo il breaker dell'errore. Penserà lui a classificare il rischio.
-                    self.breaker.record_failure(e)
+                    # 🛠️ FIX DOUBLE-RECORD: Calcoliamo l'eccezione finale e la registriamo UNA SOLA VOLTA
+                    final_exception_to_record = e
                     
                     is_watchdog_abort = False
                     with self._state_lock: is_watchdog_abort = self.force_abort
@@ -209,10 +202,12 @@ class ExecutionEngine:
                             self.logger.warning(f"🔄 Rollback FASE 1 (RESERVED) eseguito: {tx_id[:8]}")
                         elif tx_id and bet_placed:
                             self.logger.critical(f"☠️ Bet PLACED sul bookmaker {tx_id[:8]} - DB UPDATE FALLITO! Innesco PANIC LEDGER.")
-                            # Forziamo un errore strutturale nel breaker per bloccare tutto
-                            self.breaker.record_failure(Exception("PANIC LEDGER TRIGGERED"))
+                            final_exception_to_record = Exception("PANIC LEDGER TRIGGERED")
                             if hasattr(money_manager.db, 'write_panic_file'):
                                 money_manager.db.write_panic_file(tx_id)
+                    
+                    # 🔴 REGISTRAZIONE UNICA NEL BREAKER
+                    self.breaker.record_failure(final_exception_to_record)
 
                     if hasattr(self.executor, "save_blackbox"):
                         try:
