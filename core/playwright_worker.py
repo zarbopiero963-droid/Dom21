@@ -20,26 +20,34 @@ class PlaywrightWorker:
         self.running = True
         if self._pool is None:
             self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        self.thread = threading.Thread(target=self._run, daemon=True)
+        
+        # 🛡️ FIX 1: Mai usare daemon=True per thread transazionali. 
+        # Garantisce l'esecuzione dei blocchi 'finally' alla chiusura del processo.
+        self.thread = threading.Thread(target=self._run, daemon=False)
         self.thread.start()
+        
         self.last_worker_heartbeat = time.time()
         self.logger.info("Playwright Worker avviato.")
 
     def stop(self):
         self.logger.info("Arresto Playwright Worker richiesto...")
         self.running = False
+        
+        # Inseriamo la Poison Pill per sbloccare la queue in modo pulito
         self.q.put((None, None, None))
         
-        # NOTA ARCHITETTURALE (STRATEGIA B):
-        # Se il worker è bloccato dentro future.result(timeout=90), questo stop() 
-        # NON è istantaneo. Il loop processerà la poison pill solo allo scadere del timeout.
         if self._pool:
-            self._pool.shutdown(wait=False)
+            # 🛡️ FIX 2: wait=True obbliga il ThreadPool ad aspettare la fine della transazione
+            # in corso prima di chiudere la serranda.
+            self.logger.info("Attendiamo lo svuotamento del ThreadPool...")
+            self._pool.shutdown(wait=True)
             
         if self.thread:
-            self.thread.join(timeout=2)
+            # 🛡️ FIX 3: Niente timeout aggressivi. Join assoluto per garantire la sincronizzazione.
+            self.logger.info("Attendiamo la chiusura del Worker Loop...")
+            self.thread.join()
             
-        self.logger.info("Playwright Worker arrestato (segnali inviati).")
+        self.logger.info("Playwright Worker arrestato in sicurezza e senza troncamenti.")
 
     def submit(self, func, *args, **kwargs):
         if self.running:
@@ -55,7 +63,7 @@ class PlaywrightWorker:
             self._pool.shutdown(wait=False)
         self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         
-        # 🔴 FIX 1: Tracciamento Thread Zombie (Prevenzione OOM su VPS)
+        # Tracciamento Thread Zombie (Prevenzione OOM su VPS)
         active_threads = threading.active_count()
         self.logger.warning(f"Thread attivi nel sistema: {active_threads}")
         
@@ -87,7 +95,6 @@ class PlaywrightWorker:
                     self.logger.critical("💀 WORKER TIMEOUT: Job bloccato >90s. Playwright in freeze IPC!")
                     self._restart_pool()
                     
-                    # 🔴 FIX 3: Gestione task_done esplicita
                     self.last_worker_heartbeat = time.time()
                     self.q.task_done()
                     continue
@@ -104,6 +111,7 @@ class PlaywrightWorker:
                 self.q.task_done()
                     
             except queue.Empty:
+                # 🛡️ FIX 4: Uscita controllata solo se la running condition è False
                 if not self.running:
                     break 
                 continue
