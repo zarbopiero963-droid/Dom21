@@ -111,24 +111,27 @@ class SuperAgentController(QObject):
         self.logger.warning("🔴 STOP CONTROLLER: Inizio sequenza di spegnimento.")
         self.is_running = False 
         
-        # 🛡️ Deleghiamo lo shutdown atomico all'Engine (Transaction Guard)
-        if hasattr(self, "engine"):
-            self.engine.stop_engine()
-            
-        self.logger.info("🛑 Motore transazionale disconnesso.")
-        
+        # 🛡️ 1. Drenaggio Worker: Svuota la coda e completa le task IN VOLO.
+        # Spostato PRIMA dell'Engine.
         if hasattr(self, "worker") and self.worker:
-            self.logger.info("Arresto Playwright Worker richiesto...")
+            self.logger.info("Arresto Playwright Worker (Drain Coda)...")
             try:
                 self.worker.stop()
             except Exception:
                 pass
+
+        # 🛡️ 2. Blocco Engine: Ora che la coda è vuota e i click sono finiti,
+        # sigilliamo definitivamente l'engine (Barrier Check finale).
+        if hasattr(self, "engine"):
+            self.engine.stop_engine()
             
         if hasattr(self, "telegram") and self.telegram:
             try:
                 self.telegram.stop()
             except Exception:
                 pass
+                
+        self.logger.info("🛑 Motore transazionale disconnesso con successo.")
 
     def stop_listening(self):
         self.stop()
