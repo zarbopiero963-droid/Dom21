@@ -109,22 +109,24 @@ class SuperAgentController(QObject):
 
     def stop(self):
         self.logger.warning("🔴 STOP MOTORE: Blocco ricezione nuovi segnali.")
-        self.is_running = False
-        if hasattr(self, "engine"): 
-            self.engine.betting_enabled = False
-            
+        # 1. Chiude le porte del Controller a nuovi segnali esterni
+        self.is_running = False 
+        
         self.logger.info("⏳ Graceful Shutdown: attesa completamento operazioni in corso...")
         
-        # 🛡️ FIX GRACEFUL SHUTDOWN 1: Attesa Semaphore (Sincronizzazione di memoria)
+        # 2. Attesa Coda: Diamo il tempo al Worker di pescare eventuali scommesse appena arrivate
+        time.sleep(0.5)
+        
+        # 3. Attesa Semaphore (Sincronizzazione Memoria: aspetta che l'Engine finisca il click)
         try:
             if hasattr(self, "engine") and hasattr(self.engine, "sem"):
-                # Se il semaforo è occupato, aspetta fino a 15 secondi
+                # Se l'Engine sta piazzando, il semaforo è rosso. Aspettiamo (max 15s).
                 self.engine.sem.acquire(timeout=15.0)
                 self.engine.sem.release()
         except Exception:
             pass
 
-        # 🛡️ FIX GRACEFUL SHUTDOWN 2: Attesa Database (Sincronizzazione Disco)
+        # 4. Attesa Database (Sincronizzazione Disco: aspetta che i soldi siano certificati)
         max_wait = 15
         for _ in range(max_wait):
             try:
@@ -135,8 +137,13 @@ class SuperAgentController(QObject):
                 pass
             time.sleep(1)
             
+        # 5. ORA spegniamo definitivamente l'Engine
+        if hasattr(self, "engine"): 
+            self.engine.betting_enabled = False
+            
         self.logger.info("🛑 Motore fermato in sicurezza. Nessuna scommessa troncata.")
         
+        # 6. Uccisione dei Thread
         if hasattr(self, "worker") and self.worker:
             self.logger.info("Arresto Playwright Worker richiesto...")
             self.worker.stop()
