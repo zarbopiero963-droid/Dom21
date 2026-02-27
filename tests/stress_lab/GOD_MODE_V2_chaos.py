@@ -103,17 +103,21 @@ def test_crash_post_bet():
 
 def test_disk_full_mark_placed():
     print("=== PHASE 3: DISK FULL DURING MARK_PLACED (Simula I/O fallito durante la Fase 2 del 2PC) ===")
-    c = create_mock_controller()
-    original_mark = c.db.mark_placed
-    c.db.mark_placed = simulate_disk_full
+    c1 = create_mock_controller()
+    original_mark = c1.db.mark_placed
+    c1.db.mark_placed = simulate_disk_full
 
     try:
-        execute_signal(c, "Lazio - Juve")
+        execute_signal(c1, "Lazio - Juve")
     except sqlite3.OperationalError: pass
     finally:
-        c.db.mark_placed = original_mark # Restore
+        c1.db.mark_placed = original_mark # Restore
 
-    financial_audit(c.db)
+    # Simula Reboot per far scattare il Panic Ledger Recovery
+    print("[SYSTEM] Simulating hard reboot to test OS-Level Panic Ledger...")
+    c2 = create_mock_controller() 
+    
+    financial_audit(c2.db)
 
 def test_sqlite_lock():
     print("=== PHASE 4: SQLITE LOCK (Simula collisione thread durante Fase 2) ===")
