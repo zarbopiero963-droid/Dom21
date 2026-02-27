@@ -43,6 +43,22 @@ class Database:
             row = self.conn.execute("SELECT current_balance, peak_balance FROM balance WHERE id = 1").fetchone()
             return (float(row["current_balance"]), float(row["peak_balance"])) if row else (0.0, 0.0)
 
+    # 🛡️ FIX 1: Ripristinato update_bankroll
+    def update_bankroll(self, current_balance, peak_balance):
+        """Aggiorna il saldo e il picco massimo nel Ledger."""
+        with self._write_lock:
+            with self._lock:
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self.conn.execute(
+                        "UPDATE balance SET current_balance=?, peak_balance=? WHERE id=1", 
+                        (float(current_balance), float(peak_balance))
+                    )
+                    self.conn.execute("COMMIT")
+                except:
+                    self.conn.execute("ROLLBACK")
+                    raise
+
     def reserve(self, tx_id, amount, table_id=1, teams="", match_hash=""):
         with self._write_lock:
             with self._lock:
