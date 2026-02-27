@@ -81,6 +81,11 @@ class Database:
                     self.conn.execute("ROLLBACK")
                     raise
 
+    def get_unsettled_placed(self):
+        """Ritorna le transazioni PLACED non ancora SETTLED (richiesto dal Controller)."""
+        with self._lock:
+            return [dict(r) for r in self.conn.execute("SELECT * FROM journal WHERE status='PLACED'").fetchall()]
+
     def rollback(self, tx_id):
         """Annulla solo se in stato RESERVED."""
         with self._write_lock:
