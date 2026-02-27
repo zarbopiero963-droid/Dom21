@@ -121,17 +121,22 @@ def test_disk_full_mark_placed():
 
 def test_sqlite_lock():
     print("=== PHASE 4: SQLITE LOCK (Simula collisione thread durante Fase 2) ===")
-    c = create_mock_controller()
-    original_mark = c.db.mark_placed
-    c.db.mark_placed = simulate_sqlite_lock
+    c1 = create_mock_controller()
+    original_mark = c1.db.mark_placed
+    c1.db.mark_placed = simulate_sqlite_lock
 
     try:
-        execute_signal(c, "Bologna - Torino")
+        execute_signal(c1, "Bologna - Torino")
     except sqlite3.OperationalError: pass
     finally:
-        c.db.mark_placed = original_mark
+        c1.db.mark_placed = original_mark
 
-    financial_audit(c.db)
+    # 🚑 FIX: Come per il disco pieno, se il DB si blocca dobbiamo simulare il riavvio
+    # per permettere al Panic Ledger di essere letto dal Bootloader!
+    print("[SYSTEM] Simulating hard reboot to test OS-Level Panic Ledger...")
+    c2 = create_mock_controller() 
+    
+    financial_audit(c2.db)
 
 def test_reboot_with_placed():
     print("=== PHASE 5: REBOOT WITH PLACED (Simula riavvio server con scommesse in corso) ===")
