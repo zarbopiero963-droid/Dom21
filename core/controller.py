@@ -108,33 +108,38 @@ class SuperAgentController(QObject):
         if self.telegram and not getattr(self.telegram, "running", False):
             self.telegram.start()
 
-    def stop_listening(self):
-        if not self.is_running: return
+    # 🛡️ FIX GRACEFUL SHUTDOWN: Applicato
+    def stop(self):
         self.logger.warning("🔴 STOP MOTORE: Blocco ricezione nuovi segnali.")
-        
-        # 1. Chiudiamo le porte ai nuovi segnali
         self.is_running = False
-        self.engine.betting_enabled = False
-        
-        # 🛡️ 2. FIX: GRACEFUL SHUTDOWN (Chiusura Morbida)
-        # Sfruttiamo il semaforo per attendere che l'Engine finisca 
-        # qualsiasi bet che è già in fase di piazzamento.
+        if hasattr(self, "engine"): 
+            self.engine.betting_enabled = False
+            
+        # Attesa operazioni in volo prima di staccare la spina
         self.logger.info("⏳ Graceful Shutdown: attesa completamento operazioni in corso...")
-        try:
-            if hasattr(self.engine, 'sem'):
-                # Chiediamo il semaforo (che sarà occupato se c'è una bet in corso).
-                # Aspettiamo massimo 60 secondi prima di forzare.
-                self.engine.sem.acquire(timeout=60.0)
-                self.engine.sem.release()
-        except Exception as e:
-            self.logger.error(f"Errore durante Graceful Shutdown: {e}")
+        max_wait = 15
+        for _ in range(max_wait):
+            try:
+                # Controlla se ci sono soldi sospesi o scommesse a metà (PRE_COMMIT o RESERVED)
+                in_flight = [p for p in self.money_manager.pending() if p["status"] in ["RESERVED", "PRE_COMMIT"]]
+                if not in_flight:
+                    break  # Via libera, niente in volo
+            except Exception:
+                pass
+            time.sleep(1)
             
         self.logger.info("🛑 Motore fermato in sicurezza. Nessuna scommessa troncata.")
+        
+        if hasattr(self, "worker") and self.worker:
+            self.logger.info("Arresto Playwright Worker richiesto...")
+            self.worker.stop()
+            
+        if hasattr(self, "telegram") and self.telegram:
+            self.telegram.stop()
 
-        # 3. Spegniamo i worker esterni
-        if self.telegram:
-            try: self.telegram.stop()
-            except: pass
+    # Alias per retrocompatibilità coi vecchi test/UI
+    def stop_listening(self):
+        self.stop()
 
     def _load_robots(self):
         return RobotManager().all()
@@ -198,7 +203,7 @@ class SuperAgentController(QObject):
             if len(self.restart_timestamps) >= 3:
                 self.logger.critical("🛑 RESTART STORM (3 crash in 5m)! Attivazione RISK_OFF GLOBALE.")
                 self.circuit_open = True
-                self.stop_listening()
+                self.stop()
                 return
 
             self.logger.critical("☢️ NUCLEAR RESTART: Riavvio forzato del Playwright Worker...")
@@ -222,119 +227,40 @@ class SuperAgentController(QObject):
                         if self.is_running:
                             self.worker.start()
                             self.worker.start_time = time.monotonic()
-                            
-                        self.logger.info("♻️ Worker rigenerato con successo.")
-                except Exception as e:
-                    self.logger.error(f"Fallito Nuclear Restart: {e}")
+                except Exception as ex:
+                    self.logger.critical(f"Errore durante NUCLEAR RESTART: {ex}")
         finally:
             self._restarting = False
 
-    def _on_bet_success(self, event): self.logger.info(f"✅ BET SUCCESS {event}")
-    def _on_bet_failed(self, event): self.logger.info(f"❌ BET FAILED {event}")
-
     def _master_watchdog(self):
         self.logger.info("👁️ Master Watchdog attivo")
-        loops_count = 0
-        
         while True:
             time.sleep(30)
-            loops_count += 1
-            self.last_heartbeat = time.monotonic()
-            
-            try:
-                with open("C:/tmp/roserpina_controller_heartbeat" if os.name == 'nt' else "/tmp/roserpina_controller_heartbeat", "w") as f:
-                    f.write(str(time.time()))
-                    f.flush()
-                    os.fsync(f.fileno())
-            except Exception: pass
-
             if not self.is_running: continue
 
-            if loops_count % 2 == 0:
-                try:
-                    process = psutil.Process(os.getpid())
-                    mem_mb = process.memory_info().rss / (1024 * 1024)
-                    if mem_mb > 900.0:
-                        self.logger.critical(f"💀 FATAL OOM RISK: RAM a {mem_mb:.1f}MB. FULL OS RESTART RICHIESTO.")
-                        os._exit(1)
-                except Exception: pass
+            # 1. Thread del Worker
+            if self.worker and hasattr(self.worker, 'thread') and self.worker.thread:
+                if not self.worker.thread.is_alive():
+                    self.logger.critical("📡 Worker Thread morto silenziosamente. Innesco riavvio...")
+                    self._nuclear_restart_worker()
+            
+            # 2. Telegram Thread
+            if self.telegram and hasattr(self.telegram, 'thread') and self.telegram.thread:
+                if not self.telegram.thread.is_alive():
+                    self.logger.error("📡 Telegram Zombie. Riavvio...")
+                    try:
+                        self.telegram.stop()
+                        time.sleep(2)
+                        self.telegram.start()
+                    except Exception as e:
+                        self.logger.critical(f"Fallito riavvio Telegram: {e}")
 
-            if self.telegram and not getattr(self.telegram, "running", False):
-                self.logger.critical("📡 Telegram Zombie. Riavvio...")
-                try: self.telegram.stop()
-                except: pass
-                time.sleep(1)
-                try: self.telegram.start()
-                except: pass
+    def _on_bet_success(self, payload):
+        tx_id = payload.get("tx_id", "UNKNOWN")
+        stake = payload.get("stake", 0)
+        self.log_message.emit(f"✅ BET SUCCESS (Tx: {tx_id}) - {stake}€")
 
-            if hasattr(self.worker, 'last_worker_heartbeat'):
-                elapsed_heartbeat = time.monotonic() - self.worker.last_worker_heartbeat
-                if elapsed_heartbeat > 120:
-                    worker_uptime = time.monotonic() - getattr(self.worker, "start_time", time.monotonic())
-                    if worker_uptime >= 60:
-                        self.logger.critical(f"💀 WORKER FREEZE DETECTED ({elapsed_heartbeat:.0f}s).")
-                        self._nuclear_restart_worker()
-
-            if loops_count % 4 == 0:
-                try:
-                    if self.money_manager.db.pending():
-                        with self._worker_lock:
-                            if getattr(self.worker, "running", False):
-                                def check_job():
-                                    try:
-                                        fresh = self.money_manager.db.pending()
-                                        if not fresh: return
-                                        res = self.worker.executor.check_settled_bets()
-                                        if not res or not res.get("status"): return
-                                        s, p, tx = res["status"], res.get("payout", 0.0), fresh[0]["tx_id"]
-                                        if s == "WIN": self.money_manager.win(tx, p)
-                                        elif s == "LOSS": self.money_manager.loss(tx)
-                                        elif s == "VOID": self.money_manager.refund(tx)
-                                    except Exception: pass
-                                self.worker.submit(check_job)
-                except sqlite3.OperationalError as e:
-                    if "database is locked" in str(e).lower():
-                        try:
-                            self.db.close()
-                            self.db = Database()
-                            self.money_manager.db = self.db
-                        except Exception: pass
-
-            if loops_count % 10 == 0:
-                try:
-                    pending = self.money_manager.db.pending()
-                    now = int(time.time())
-                    for p in pending:
-                        # 🔴 FIX 2PC: Il Watchdog DEVE ignorare le PLACED. Rimborsa solo le RESERVED fantasma.
-                        if p.get("status") != "RESERVED": 
-                            continue 
-                            
-                        ts = p.get("timestamp")
-                        tx_id = p.get("tx_id")
-                        if ts and (now - int(ts)) > 180:
-                            self.logger.critical(f"🧟 Zombie TX (RESERVED) rilevata >3min: {tx_id[:8]} → Tentativo Refund automatico.")
-                            try:
-                                self.money_manager.refund(tx_id)
-                            except Exception as e:
-                                self.logger.error(f"Errore refund zombie: {e}")
-                except Exception:
-                    pass
-
-            if loops_count % 20 == 0:
-                if not self.money_manager.db.pending():
-                    with self._worker_lock:
-                        if getattr(self.worker, "running", False):
-                            def reconcile_job():
-                                try:
-                                    bal = self.worker.executor.get_balance()
-                                    if bal is not None: self.money_manager.reconcile_balances(bal)
-                                except Exception: pass
-                            self.worker.submit(reconcile_job)
-
-            if loops_count >= 240:
-                loops_count = 0  
-                try:
-                    self.db.maintain_wal()
-                    if not self.money_manager.db.pending():
-                        self.db.conn.execute("VACUUM")
-                except Exception: pass
+    def _on_bet_failed(self, payload):
+        tx_id = payload.get("tx_id", "UNKNOWN")
+        reason = payload.get("reason", "Unknown Error")
+        self.log_message.emit(f"❌ BET FAILED (Tx: {tx_id}) - Reason: {reason}")
