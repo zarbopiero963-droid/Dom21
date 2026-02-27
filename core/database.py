@@ -81,6 +81,11 @@ class Database:
                     self.conn.execute("ROLLBACK")
                     raise
 
+    def pending(self):
+        """Ritorna tutte le transazioni in corso (RESERVED, PRE_COMMIT, PLACED, MANUAL_CHECK)."""
+        with self._lock:
+            return [dict(r) for r in self.conn.execute("SELECT * FROM journal WHERE status NOT IN ('VOID', 'SETTLED')").fetchall()]
+
     def get_unsettled_placed(self):
         """Ritorna le transazioni PLACED non ancora SETTLED (richiesto dal Controller)."""
         with self._lock:
