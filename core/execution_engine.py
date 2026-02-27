@@ -2,6 +2,7 @@ import time
 import logging
 import threading
 import uuid
+import re
 from typing import Dict, Any
 from core.circuit_breaker import CircuitBreaker
 
@@ -19,6 +20,27 @@ class ExecutionEngine:
         self.current_bet_start = 0
         self.force_abort = False
 
+    def _safe_float(self, val: Any, default: float = 2.0) -> float:
+        """🛡️ Scudo Type-Safety: Converte stringhe sporche e None in Float sicuri."""
+        if val is None:
+            return default
+        if isinstance(val, (int, float)):
+            return float(val)
+        try:
+            # Pulisce simboli di valuta e caratteri strani
+            clean_str = re.sub(r'[^\d.,-]', '', str(val))
+            if not clean_str: return default
+            
+            # Gestione formati europei/americani (es. 1.234,56 -> 1234.56)
+            if ',' in clean_str and '.' in clean_str:
+                clean_str = clean_str.replace('.', '').replace(',', '.')
+            elif ',' in clean_str:
+                clean_str = clean_str.replace(',', '.')
+                
+            return float(clean_str)
+        except Exception:
+            return default
+
     def process_signal(self, payload: Dict[str, Any], money_manager) -> None:
         if not getattr(self, "betting_enabled", False): return
         if not self.breaker.allow_request(): return
@@ -31,9 +53,13 @@ class ExecutionEngine:
         
         teams = payload.get("teams", "Unknown")
         
-        # 🛡️ FIX: Blindatura finale contro stake a 'None' (ZOMBIE_TX Fix)
-        raw_stake = payload.get("stake")
-        stake = float(raw_stake) if raw_stake is not None else 2.0
+        # 🛡️ FIX ZOMBIE_TX: Applicazione dello scudo matematico
+        stake = self._safe_float(payload.get("stake"), default=2.0)
+
+        # Guardia strutturale: mai processare stake negativi o a zero
+        if stake <= 0:
+            self.logger.error(f"❌ Stake non valido ({stake}). Transazione abortita.")
+            return
 
         try:
             with self.sem:
@@ -63,7 +89,7 @@ class ExecutionEngine:
                     self.breaker.record_success()
                     
                     # 📢 NOTIFICA SUCCESSO ALL'EVENT BUS
-                    self.logger.info(f"✅ Bet PLACED e certificata dal bookmaker: {stake}€")
+                    self.logger.info(f"✅ Bet PLACED e certificata: {stake}€ su {teams}")
                     self.bus.emit("BET_SUCCESS", {"tx_id": tx_id, "teams": teams, "stake": stake, "odds": 2.0})
                     
                 except Exception as inner_e:
