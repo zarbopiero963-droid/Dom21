@@ -94,14 +94,36 @@ except Exception as e: fail("CLOUDFLARE_BAN", str(e))
 
 try:
     shutdown_flag = {"finished": False}
-    def slow_task():
-        original_sleep(1)
+    
+    # 🛡️ FIX: Simula una scommessa che richiede 1.5 secondi per essere piazzata
+    orig_place = c.worker.executor.place_bet
+    def slow_place(*args, **kwargs):
+        original_sleep(1.5)
         shutdown_flag["finished"] = True
-    c.worker.submit(slow_task)
-    c.worker.stop()
-    if not shutdown_flag["finished"]: fail("GRACEFUL_SHUTDOWN", "Il comando ha troncato la scommessa!")
-    else: ok("GRACEFUL_SHUTDOWN", "Chiusura elegante OK.")
-except Exception as e: fail("GRACEFUL_SHUTDOWN", str(e))
+        return orig_place(*args, **kwargs)
+    
+    c.worker.executor.place_bet = slow_place
+    
+    # Avviamo il segnale in un thread per non bloccare il main thread
+    t = threading.Thread(target=c.engine.process_signal, args=({"teams": "SLOW_MATCH", "market": "1", "is_active": True}, c.money_manager))
+    t.start()
+    
+    # Diamo all'engine 0.5 secondi per iniziare a processare (acquisire il semaforo)
+    original_sleep(0.5)
+    
+    # Ora chiediamo lo spegnimento morbido. 
+    # DEVE attendere che il semaforo venga rilasciato da slow_place.
+    c.stop_listening()
+    t.join()
+    
+    if not shutdown_flag["finished"]: 
+        fail("GRACEFUL_SHUTDOWN", "Il comando ha troncato la scommessa in volo!")
+    else: 
+        ok("GRACEFUL_SHUTDOWN", "Chiusura elegante OK. Scommessa protetta prima dello stop.")
+        
+    c.worker.executor.place_bet = orig_place
+except Exception as e: 
+    fail("GRACEFUL_SHUTDOWN", str(e))
 
 try:
     process = psutil.Process(os.getpid())
@@ -116,6 +138,12 @@ try:
 except Exception as e: fail("MEMORY_LEAK", str(e))
 
 print("\n"+"="*60)
+try:
+    c.worker.stop()
+    c.engine.bus.stop()
+except:
+    pass
+
 if FAILURES:
     print("🔴 ENDURANCE TEST: FAGLIE AMBIENTALI RILEVATE\n")
     sys.exit(1)
