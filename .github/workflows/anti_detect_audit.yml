@@ -1,4 +1,4 @@
-name: 🌍 Webshare Network & Stealth Audit (Ghost Mode)
+name: 🕵️‍♂️ Anti-Detect Security Check (Ghost Mode)
 
 on:
   push:
@@ -23,29 +23,21 @@ jobs:
       with:
         python-version: "3.10"
         
-    - name: Installazione Dipendenze (Playwright & Requests)
+    - name: Installazione Dipendenze (Playwright)
       run: |
         python -m pip install --upgrade pip
-        # 🛡️ Aggiunto 'requests' per interrogare le API di Webshare
-        pip install playwright pytest requests
+        pip install playwright pytest
         
     - name: Installazione Motore Chromium C++
       run: python -m playwright install chromium --with-deps
       
-    - name: 🌍 Esecuzione Webshare API & Bet365 Network Test
+    - name: 🕵️‍♂️ Esecuzione Ultimate Anti-Detect Audit
       env:
-        # 🛡️ Inietta il token API dai segreti di GitHub
-        WEBSHARE_TOKEN: ${{ secrets.WEBSHARE_TOKEN }}
+        # Inietta il proxy dai segreti di GitHub (se configurato)
+        # Formato: http://username:password@ip:porta
+        PROXY_URL: ${{ secrets.PROXY_URL }}
       run: |
         # xvfb-run emula un display X11 virtuale (fondamentale per ingannare
         # i test anti-bot che cercano la presenza di uno schermo fisico)
         # Il flag -u forza i log in tempo reale su GitHub!
-        
-        # Lancia il nuovo test di rete isolato
-        xvfb-run -a python -u tests/tests/network/test_webshare_bet365.py
-
-    # (Opzionale) Se hai ancora il vecchio test ANTI_DETECT_AUDIT.py e vuoi farlo girare senza proxy, 
-    # puoi decommentare queste righe:
-    # - name: 🕵️‍♂️ Esecuzione Ultimate Anti-Detect Audit Logico
-    #   run: |
-    #     xvfb-run -a python -u tests/tests/system_integrity/ANTI_DETECT_AUDIT.py
+        xvfb-run -a python -u tests/tests/system_integrity/ANTI_DETECT_AUDIT.py
