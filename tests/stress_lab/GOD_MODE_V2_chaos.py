@@ -22,6 +22,10 @@ def create_mock_controller():
     logging.basicConfig(level=logging.CRITICAL)
     c = SuperAgentController(logging.getLogger("GOD_MODE_V2"))
     
+    # 🧹 Pulisce la memoria del Breaker persistente tra un test e l'altro
+    if hasattr(c.engine, 'breaker'):
+        c.engine.breaker.manual_reset()
+    
     # Bypass Playwright
     c.worker.executor.place_bet = lambda *a, **k: True
     c.worker.executor.navigate_to_match = lambda *a, **k: True
