@@ -108,48 +108,27 @@ class SuperAgentController(QObject):
             self.telegram.start()
 
     def stop(self):
-        self.logger.warning("🔴 STOP MOTORE: Blocco ricezione nuovi segnali.")
-        # 1. Chiude le porte del Controller a nuovi segnali esterni
+        self.logger.warning("🔴 STOP CONTROLLER: Inizio sequenza di spegnimento.")
         self.is_running = False 
         
-        self.logger.info("⏳ Graceful Shutdown: attesa completamento operazioni in corso...")
-        
-        # 2. Attesa Coda: Diamo il tempo al Worker di pescare eventuali scommesse appena arrivate
-        time.sleep(0.5)
-        
-        # 3. Attesa Semaphore (Sincronizzazione Memoria: aspetta che l'Engine finisca il click)
-        try:
-            if hasattr(self, "engine") and hasattr(self.engine, "sem"):
-                # Se l'Engine sta piazzando, il semaforo è rosso. Aspettiamo (max 15s).
-                self.engine.sem.acquire(timeout=15.0)
-                self.engine.sem.release()
-        except Exception:
-            pass
-
-        # 4. Attesa Database (Sincronizzazione Disco: aspetta che i soldi siano certificati)
-        max_wait = 15
-        for _ in range(max_wait):
-            try:
-                in_flight = [p for p in self.money_manager.pending() if p["status"] in ["RESERVED", "PRE_COMMIT"]]
-                if not in_flight:
-                    break  
-            except Exception:
-                pass
-            time.sleep(1)
+        # 🛡️ Deleghiamo lo shutdown atomico all'Engine (Transaction Guard)
+        if hasattr(self, "engine"):
+            self.engine.stop_engine()
             
-        # 5. ORA spegniamo definitivamente l'Engine
-        if hasattr(self, "engine"): 
-            self.engine.betting_enabled = False
-            
-        self.logger.info("🛑 Motore fermato in sicurezza. Nessuna scommessa troncata.")
+        self.logger.info("🛑 Motore transazionale disconnesso.")
         
-        # 6. Uccisione dei Thread
         if hasattr(self, "worker") and self.worker:
             self.logger.info("Arresto Playwright Worker richiesto...")
-            self.worker.stop()
+            try:
+                self.worker.stop()
+            except Exception:
+                pass
             
         if hasattr(self, "telegram") and self.telegram:
-            self.telegram.stop()
+            try:
+                self.telegram.stop()
+            except Exception:
+                pass
 
     def stop_listening(self):
         self.stop()
