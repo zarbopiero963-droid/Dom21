@@ -108,7 +108,8 @@ except Exception as e: fail("MISSING_FIN_WATCHDOG", str(e), "mm", "Unknown")
 # TEST 4
 try:
     c = create_mocked_controller()
-    c.money_manager.db.update_bankroll(100.0)
+    # 🛡️ FIX: Allineato alla firma a due parametri di update_bankroll(current_balance, peak_balance)
+    c.money_manager.db.update_bankroll(100.0, 100.0)
     def spam():
         try:
             stake = c.money_manager.get_stake(2.0)
@@ -169,7 +170,8 @@ except Exception as e: fail("COMMAND_CENTER_LOCKS", str(e), "controller.py", "Un
 print("\n" + "=" * 60)
 if FAILURES:
     print("🔴 ULTRA SYSTEM TEST: ERRORI CRITICI")
-    sys.exit(1)
+    for f in FAILURES: print(f)
+    os._exit(1)  # 🔪 HARD KILL: Taglia la testa ai thread pendenti istantaneamente
 else:
-    print("🟢 ULTRA SYSTEM TEST SUPERATO CON SUCCESSO")
-    sys.exit(0)
+    print("🟢 ULTRA SYSTEM TEST SUPERATO")
+    os._exit(0)  # 🔪 HARD KILL
