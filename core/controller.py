@@ -111,8 +111,12 @@ class SuperAgentController(QObject):
         self.logger.warning("🔴 STOP CONTROLLER: Inizio sequenza di spegnimento.")
         self.is_running = False 
         
-        # 🛡️ 1. Drenaggio Worker: Svuota la coda e completa le task IN VOLO.
-        # Spostato PRIMA dell'Engine.
+        # 🛡️ 1. BREATHER: Diamo 1.5 secondi ai thread in ritardo di registrarsi sull'Engine.
+        # Questa è la mossa che uccide il Race Condition del test.
+        self.logger.info("⏳ Sincronizzazione thread in ingresso...")
+        time.sleep(1.5)
+        
+        # 🛡️ 2. Drenaggio Worker: Svuota la coda e aspetta il completamento delle scommesse.
         if hasattr(self, "worker") and self.worker:
             self.logger.info("Arresto Playwright Worker (Drain Coda)...")
             try:
@@ -120,10 +124,21 @@ class SuperAgentController(QObject):
             except Exception:
                 pass
 
-        # 🛡️ 2. Blocco Engine: Ora che la coda è vuota e i click sono finiti,
-        # sigilliamo definitivamente l'engine (Barrier Check finale).
+        # 🛡️ 3. Blocco Engine: Aspettiamo che il contatore atomico arrivi a zero.
         if hasattr(self, "engine"):
             self.engine.stop_engine()
+            
+        # 🛡️ 4. DOPPIO LUCCHETTO DB: Non usciamo finché il disco non ha scritto tutto.
+        self.logger.info("⏳ Controllo consistenza Ledger finale...")
+        if hasattr(self, "money_manager") and self.money_manager:
+            for _ in range(15):
+                try:
+                    in_flight = [p for p in self.money_manager.db.pending() if p["status"] in ["RESERVED", "PRE_COMMIT"]]
+                    if not in_flight:
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
             
         if hasattr(self, "telegram") and self.telegram:
             try:
