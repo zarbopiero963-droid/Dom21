@@ -1,6 +1,5 @@
 import sys
 import os
-import random
 import sqlite3
 import time
 import logging
@@ -14,183 +13,144 @@ if project_root not in sys.path: sys.path.insert(0, project_root)
 from core.controller import SuperAgentController
 from core.database import Database
 
-CHAOS_SEED = 42
-random.seed(CHAOS_SEED)
-
-# --- Mocking per bypassare Playwright ma testare l'infrastruttura DB/Risk ---
+# --- INIZIALIZZAZIONE AMBIENTE ---
 def create_mock_controller():
     logging.basicConfig(level=logging.CRITICAL)
     c = SuperAgentController(logging.getLogger("GOD_MODE_V2"))
     
-    # 🧹 Pulisce la memoria del Breaker persistente tra un test e l'altro
+    # 🧹 Reset Breaker persistente
     if hasattr(c.engine, 'breaker'):
         c.engine.breaker.manual_reset()
     
-    # Bypass Playwright
-    c.worker.executor.place_bet = lambda *a, **k: True
-    c.worker.executor.navigate_to_match = lambda *a, **k: True
-    c.worker.executor.find_odds = lambda *a, **k: 2.0
-    c.worker.executor.ensure_login = lambda *a, **k: True
-    c.worker.executor.get_balance = lambda *a, **k: c.money_manager.bankroll()
+    # Non sovrascriviamo più place_bet con lambda. Usiamo l'executor istituzionale reale.
+    c.worker.executor._mock_logged_in = True
+    c.worker.executor._mock_balance = 1000.0
+    c.worker.executor.allow_place = True # Per testare il flusso completo
     
-    # Forza stato attivo per i test
     c.engine.betting_enabled = True
     c.is_running = True
     return c
 
+def reset_ledger(c: SuperAgentController):
+    """Pulisce il DB e resetta i saldi per avere test isolati."""
+    c.db.conn.execute("DELETE FROM journal")
+    c.db.conn.execute("UPDATE balance SET current_balance=1000.0, peak_balance=1000.0")
+    c.db.conn.commit()
+    c.worker.executor._chaos_hooks.clear()
+    c.worker.executor._mock_logged_in = True
+    c.worker.executor._mock_balance = 1000.0
+    if hasattr(c.engine, 'breaker'):
+        c.engine.breaker.manual_reset()
+
 def execute_signal(controller, teams):
-    """Simula il passaggio del segnale attraverso il motore."""
     payload = {"teams": teams, "market": "1", "raw_text": teams, "stake": 2.0, "mm_mode": "Stake Fisso", "is_active": True}
     controller.engine.process_signal(payload, controller.money_manager)
 
-# --- Iniettori di Caos ---
-def simulate_disk_full(*args, **kwargs):
-    raise sqlite3.OperationalError("database or disk is full")
-
-def simulate_sqlite_lock(*args, **kwargs):
-    raise sqlite3.OperationalError("database is locked")
-
-def inject_crash_pre_bet(executor, original_method):
-    def fake_place(*a, **k):
-        raise RuntimeError("CHAOS: crash before place_bet")
-    executor.place_bet = fake_place
-
-def inject_crash_post_bet(executor, original_method):
-    def fake_place(*a, **k):
-        original_method(*a, **k) # Simula successo
-        raise RuntimeError("CHAOS: crash after place_bet")
-    executor.place_bet = fake_place
-
-# --- Auditing Finanziario ---
-def financial_audit(db: Database):
+def strict_audit(db: Database, expected_balance: float, expected_placed: int, expected_manual: int):
+    """Verifica matematica dello stato transazionale post-bootloader."""
     balance, _ = db.get_balance()
-    pending = [r for r in db.pending() if r['status'] == 'RESERVED'] # Nel nuovo sistema i pending sono i RESERVED
-    placed = db.get_unsettled_placed()
+    journal = [dict(r) for r in db.conn.execute("SELECT * FROM journal").fetchall()]
+    
+    placed = len([r for r in journal if r['status'] == 'PLACED'])
+    manual = len([r for r in journal if r['status'] == 'MANUAL_CHECK'])
+    voided = len([r for r in journal if r['status'] == 'VOID'])
+    reserved = len([r for r in journal if r['status'] == 'RESERVED'])
+    pre_commit = len([r for r in journal if r['status'] == 'PRE_COMMIT'])
 
-    print(f"[AUDIT] Balance: €{balance:.2f}")
-    print(f"[AUDIT] RESERVED (Pending): {len(pending)}")
-    print(f"[AUDIT] PLACED: {len(placed)}")
+    print(f"[AUDIT] Balance: €{balance:.2f} | PLACED: {placed} | MANUAL_CHECK: {manual} | VOID: {voided}")
 
-    # 1️⃣ Pending after reboot = fail
-    if pending:
-        raise AssertionError(f"FAIL: {len(pending)} RESERVED tx survived crash. 2PC Bootloader failed!")
+    if reserved > 0 or pre_commit > 0:
+        raise AssertionError(f"FAIL: Transazioni intermedie (RESERVED:{reserved}, PRE_COMMIT:{pre_commit}) sopravvissute al bootloader!")
+    
+    if balance != expected_balance:
+        raise AssertionError(f"FAIL: Balance mismatch. Atteso {expected_balance}, Trovato {balance}")
+    
+    if placed != expected_placed:
+        raise AssertionError(f"FAIL: PLACED mismatch. Atteso {expected_placed}, Trovato {placed}")
+        
+    if manual != expected_manual:
+        raise AssertionError(f"FAIL: MANUAL_CHECK mismatch. Atteso {expected_manual}, Trovato {manual}")
 
-    # 2️⃣ Balance cannot be negative
-    if balance < 0:
-        raise AssertionError("FAIL: Negative bankroll")
+    print("[AUDIT] 🟢 CONSISTENT (Strict Match)\n")
 
-    print("[AUDIT] CONSISTENT\n")
+# ==========================================
+# 🔥 LE 4 FASI DELLA CERTIFICAZIONE 2PC 🔥
+# ==========================================
 
-# --- LE 6 FASI DELL'APOCALISSE ---
-
-def test_crash_pre_bet():
-    print("=== PHASE 1: CRASH PRE BET (Simula errore bookmaker o crash prima di inviare) ===")
+def test_crash_pre_precommit():
+    print("=== PHASE 1: CRASH PRE-PRE_COMMIT (I/O Fail durante la Reserve) ===")
     c = create_mock_controller()
-    inject_crash_pre_bet(c.worker.executor, c.worker.executor.place_bet)
+    reset_ledger(c)
+    
+    # Iniezione errore direttamente su DB prima del PRE_COMMIT
+    original_mark = c.db.mark_pre_commit
+    def mock_fail(*a, **k): raise sqlite3.OperationalError("I/O Error")
+    c.db.mark_pre_commit = mock_fail
+    
+    try: execute_signal(c, "Match 1")
+    except Exception: pass
+    finally: c.db.mark_pre_commit = original_mark
+    
+    # Simuliamo il riavvio per far agire il Bootloader
+    c2 = create_mock_controller()
+    # Expect: RESERVED è diventato VOID, soldi rimborsati.
+    strict_audit(c2.db, expected_balance=1000.0, expected_placed=0, expected_manual=0)
 
-    try:
-        execute_signal(c, "Milan - Roma")
-    except RuntimeError: pass
-
-    financial_audit(c.db)
-
-def test_crash_post_bet():
-    print("=== PHASE 2: CRASH POST BET (Simula crash appena il bookmaker accetta) ===")
+def test_crash_pre_click():
+    print("=== PHASE 2: CRASH POST-PRE_COMMIT / PRE-CLICK (La Zona d'Ombra Inizia) ===")
     c = create_mock_controller()
-    inject_crash_post_bet(c.worker.executor, c.worker.executor.place_bet)
-
-    try:
-        execute_signal(c, "Inter - Napoli")
+    reset_ledger(c)
+    
+    c.worker.executor._chaos_hooks["crash_pre_click"] = True
+    
+    try: execute_signal(c, "Match 2")
     except RuntimeError: pass
-
-    financial_audit(c.db)
-
-def test_disk_full_mark_placed():
-    print("=== PHASE 3: DISK FULL DURING MARK_PLACED (Simula I/O fallito durante la Fase 2 del 2PC) ===")
-    c1 = create_mock_controller()
-    original_mark = c1.db.mark_placed
-    c1.db.mark_placed = simulate_disk_full
-
-    try:
-        execute_signal(c1, "Lazio - Juve")
-    except sqlite3.OperationalError: pass
-    finally:
-        c1.db.mark_placed = original_mark # Restore
-
-    # Simula Reboot per far scattare il Panic Ledger Recovery
-    print("[SYSTEM] Simulating hard reboot to test OS-Level Panic Ledger...")
-    c2 = create_mock_controller() 
     
-    financial_audit(c2.db)
+    c2 = create_mock_controller()
+    # Expect: PRE_COMMIT scritto. Bootloader lo trasforma in MANUAL_CHECK. Soldi NON rimborsati.
+    strict_audit(c2.db, expected_balance=998.0, expected_placed=0, expected_manual=1)
 
-def test_sqlite_lock():
-    print("=== PHASE 4: SQLITE LOCK (Simula collisione thread durante Fase 2) ===")
-    c1 = create_mock_controller()
-    original_mark = c1.db.mark_placed
-    c1.db.mark_placed = simulate_sqlite_lock
-
-    try:
-        execute_signal(c1, "Bologna - Torino")
-    except sqlite3.OperationalError: pass
-    finally:
-        c1.db.mark_placed = original_mark
-
-    # 🚑 FIX: Come per il disco pieno, se il DB si blocca dobbiamo simulare il riavvio
-    # per permettere al Panic Ledger di essere letto dal Bootloader!
-    print("[SYSTEM] Simulating hard reboot to test OS-Level Panic Ledger...")
-    c2 = create_mock_controller() 
+def test_session_drop_mid_flight():
+    print("=== PHASE 3: SESSION DROP (Sessione invalida al momento del click) ===")
+    c = create_mock_controller()
+    reset_ledger(c)
     
-    financial_audit(c2.db)
-
-def test_reboot_with_placed():
-    print("=== PHASE 5: REBOOT WITH PLACED (Simula riavvio server con scommesse in corso) ===")
-    c1 = create_mock_controller()
-    execute_signal(c1, "Atalanta - Fiorentina") # Questa andrà a buon fine e diventerà PLACED
+    c.worker.executor._chaos_hooks["session_drop"] = True
     
-    # Simulate Reboot (Ricreando il controller, scatta il bootloader)
-    print("[SYSTEM] Simulating hard reboot...")
-    c2 = create_mock_controller() 
+    try: execute_signal(c, "Match 3")
+    except Exception: pass
     
-    placed = c2.db.get_unsettled_placed()
-    if not placed:
-        raise AssertionError("FAIL: PLACED disappeared after reboot. Fatal accounting loss!")
+    c2 = create_mock_controller()
+    # Expect: Uguale a Phase 2. L'intento c'era, l'azione è fallita ma serve check manuale.
+    strict_audit(c2.db, expected_balance=998.0, expected_placed=0, expected_manual=1)
 
-    print(f"[BOOT] OK: {len(placed)} PLACED survived reboot correctly")
-    financial_audit(c2.db)
-
-def test_drift():
-    print("=== PHASE 6: DRIFT TEST (Simula iniezione fondi esterni) ===")
-    db = Database()
-    before, _ = db.get_balance()
-
-    db.update_bankroll(before + 50)
-    after, _ = db.get_balance()
-
-    if after <= before:
-        raise AssertionError("FAIL: Drift not applied")
-
-    print(f"[DRIFT] OK: External bankroll change detected. (Before: {before}, After: {after})")
-    print("[AUDIT] CONSISTENT\n")
+def test_crash_post_click():
+    print("=== PHASE 4: CRASH POST-CLICK (Panic Ledger Trigger) ===")
+    c = create_mock_controller()
+    reset_ledger(c)
+    
+    c.worker.executor._chaos_hooks["crash_post_click"] = True
+    
+    try: execute_signal(c, "Match 4")
+    except RuntimeError: pass
+    
+    # Simuliamo riavvio: Bootloader deve leggere il .panic file
+    c2 = create_mock_controller()
+    # Expect: Il .panic impone PLACED. Saldo aggiornato dal bookmaker simulato.
+    strict_audit(c2.db, expected_balance=998.0, expected_placed=1, expected_manual=0)
 
 def run_all():
     print("\n" + "🔥" * 50)
-    print("GOD MODE V2 CHAOS ENGINE — HEDGE FUND EDITION")
+    print("GOD MODE V2.1 — TRANSACTIONAL COORDINATOR CERTIFICATION")
     print("🔥" * 50 + "\n")
     
-    # Assicuriamoci che il DB parta pulito per i test
-    db = Database()
-    db.conn.execute("DELETE FROM journal")
-    db.conn.commit()
-
-    test_crash_pre_bet()
-    test_crash_post_bet()
-    test_disk_full_mark_placed()
-    test_sqlite_lock()
-    test_reboot_with_placed()
-    test_drift()
+    test_crash_pre_precommit()
+    test_crash_pre_click()
+    test_session_drop_mid_flight()
+    test_crash_post_click()
 
     print("============================================================")
-    print("👑 GOD MODE V2 PASSED – SYSTEM SURVIVES INFRASTRUCTURE CHAOS")
+    print("👑 GOD MODE V2.1 PASSED – 2PC & WRITE-AHEAD LEDGER CERTIFIED")
     print("============================================================\n")
 
 if __name__ == "__main__":
