@@ -79,6 +79,11 @@ try:
         ok("DISK_FULL_SURVIVAL", "Errore 'Disco Pieno' intercettato. Il bot non è crashato.")
     except Exception as e: fail("DISK_FULL_SURVIVAL", f"L'errore disco pieno ha ucciso il bot: {e}")
     c.money_manager.reserve = orig_reserve
+    
+    # 🧹 FIX: Il disco pieno attiva il blocco fatale del Breaker persistente. Sblocchiamolo per i prossimi test.
+    if hasattr(c.engine, 'breaker'):
+        c.engine.breaker.manual_reset()
+        
 except Exception as e: fail("DISK_FULL_SURVIVAL", str(e))
 
 try:
@@ -90,6 +95,11 @@ try:
         ok("CLOUDFLARE_BAN", "Blocco antibot catturato. Il motore ha abortito la giocata.")
     except Exception as e: fail("CLOUDFLARE_BAN", f"Eccezione non gestita: {e}")
     c.worker.executor.find_odds = orig_find_odds
+    
+    # Pulizia breaker post-cloudflare
+    if hasattr(c.engine, 'breaker'):
+        c.engine.breaker.manual_reset()
+
 except Exception as e: fail("CLOUDFLARE_BAN", str(e))
 
 try:
