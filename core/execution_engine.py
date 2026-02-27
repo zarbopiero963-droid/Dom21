@@ -228,7 +228,9 @@ class ExecutionEngine:
                             money_manager.refund(tx_id)
                             self.logger.warning(f"🔄 Rollback FASE 1 (RESERVED) eseguito: {tx_id[:8]}")
                         elif tx_id and bet_placed:
-                            self.logger.critical(f"☠️ Bet PLACED sul bookmaker {tx_id[:8]} - Nessun Rollback, attesa reconcile.")
+                            self.logger.critical(f"☠️ Bet PLACED sul bookmaker {tx_id[:8]} - DB UPDATE FALLITO! Innesco PANIC LEDGER.")
+                            if hasattr(money_manager.db, 'write_panic_file'):
+                                money_manager.db.write_panic_file(tx_id)
 
                     if hasattr(self.executor, "save_blackbox"):
                         try:
