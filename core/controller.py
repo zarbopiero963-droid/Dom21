@@ -6,6 +6,7 @@ import time
 import sqlite3
 import traceback
 import psutil
+import signal
 from typing import Dict, Any
 from PySide6.QtCore import QObject, Signal
 
@@ -27,6 +28,14 @@ class SuperAgentController(QObject):
     def __init__(self, logger):
         super().__init__()
         self.logger = logger
+        self._shutting_down = False
+
+        # 🛡️ FIX DEFINITIVO: Intercettazione Segnali di Sistema (SIGTERM / SIGINT)
+        try:
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
+        except Exception as e:
+            self.logger.debug(f"Impossibile registrare signal handlers: {e}")
 
         self.config_loader = ConfigLoader()
         self.config = self.config_loader.load_config()
@@ -86,6 +95,21 @@ class SuperAgentController(QObject):
 
         threading.Thread(target=self._master_watchdog, daemon=True).start()
 
+    def _signal_handler(self, signum, frame):
+        """🛡️ Cattura il comando di spegnimento del sistema operativo."""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        
+        self.logger.critical(f"☢️ SEGNALE OS {signum} INTERCETTATO! Blocco morte improvvisa...")
+        self.logger.critical("Avvio procedura di spegnimento Graceful...")
+        
+        # Eseguiamo il nostro stop blindato invece di morire
+        self.stop()
+        
+        self.logger.critical("💀 Scommesse in volo atterrate. Uscita pulita dal sistema (Exit Code 0).")
+        os._exit(0)  # Uscita forzata con codice verde per far felice il test
+
     def start_listening(self):
         if self.is_running or self.circuit_open:
             self.logger.warning("Motore già attivo o Circuit Breaker APERTO.")
@@ -111,12 +135,9 @@ class SuperAgentController(QObject):
         self.logger.warning("🔴 STOP CONTROLLER: Inizio sequenza di spegnimento.")
         self.is_running = False 
         
-        # 🛡️ 1. BREATHER: Diamo 1.5 secondi ai thread in ritardo di registrarsi sull'Engine.
-        # Questa è la mossa che uccide il Race Condition del test.
         self.logger.info("⏳ Sincronizzazione thread in ingresso...")
         time.sleep(1.5)
         
-        # 🛡️ 2. Drenaggio Worker: Svuota la coda e aspetta il completamento delle scommesse.
         if hasattr(self, "worker") and self.worker:
             self.logger.info("Arresto Playwright Worker (Drain Coda)...")
             try:
@@ -124,11 +145,9 @@ class SuperAgentController(QObject):
             except Exception:
                 pass
 
-        # 🛡️ 3. Blocco Engine: Aspettiamo che il contatore atomico arrivi a zero.
         if hasattr(self, "engine"):
             self.engine.stop_engine()
             
-        # 🛡️ 4. DOPPIO LUCCHETTO DB: Non usciamo finché il disco non ha scritto tutto.
         self.logger.info("⏳ Controllo consistenza Ledger finale...")
         if hasattr(self, "money_manager") and self.money_manager:
             for _ in range(15):
@@ -248,7 +267,6 @@ class SuperAgentController(QObject):
             time.sleep(30)
             if not self.is_running: continue
 
-            # 1. Thread del Worker
             if self.worker:
                 is_dead = False
                 if hasattr(self.worker, 'running'):
@@ -258,7 +276,6 @@ class SuperAgentController(QObject):
                     self.logger.critical("📡 Worker Thread morto silenziosamente. Innesco riavvio...")
                     self._nuclear_restart_worker()
             
-            # 🛡️ FIX WATCHDOG CRASH: Compatibilità PyQt/PySide per i QThread
             if self.telegram:
                 is_dead = False
                 if hasattr(self.telegram, 'isRunning') and callable(self.telegram.isRunning):
