@@ -34,6 +34,12 @@ class SuperAgentController(QObject):
 
         self.db = Database()
         
+        # 🚑 PANIC LEDGER RECOVERY (Deve girare prima di ogni altra cosa)
+        try:
+            self.db.resolve_panics()
+        except Exception as e:
+            self.logger.error(f"Panic Ledger Recovery fallito: {e}")
+
         # 🔒 Crash Recovery 2-Phase (Bootloader)
         try:
             self.db.recover_reserved()
