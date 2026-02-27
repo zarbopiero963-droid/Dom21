@@ -3,6 +3,7 @@ import time
 import logging
 import threading
 import sqlite3
+import math
 from pathlib import Path
 
 DB_DIR = os.path.join(str(Path.home()), ".superagent_data")
@@ -43,9 +44,7 @@ class Database:
             row = self.conn.execute("SELECT current_balance, peak_balance FROM balance WHERE id = 1").fetchone()
             return (float(row["current_balance"]), float(row["peak_balance"])) if row else (0.0, 0.0)
 
-    # 🛡️ FIX 1: Ripristinato update_bankroll
     def update_bankroll(self, current_balance, peak_balance):
-        """Aggiorna il saldo e il picco massimo nel Ledger."""
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
@@ -60,6 +59,14 @@ class Database:
                     raise
 
     def reserve(self, tx_id, amount, table_id=1, teams="", match_hash=""):
+        # 🛡️ FIX ZOMBIE_TX / MATH_POISON: Scudo anti-corruzione per SQLite
+        try:
+            amt = float(amount)
+            if math.isnan(amt) or math.isinf(amt) or amt <= 0:
+                raise ValueError(f"Stake non valido o corrotto: {amount}")
+        except (TypeError, ValueError):
+            raise ValueError("Stake impossibile da convertire")
+
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
@@ -67,15 +74,14 @@ class Database:
                     self.conn.execute("""
                         INSERT INTO journal (tx_id, amount, status, timestamp, table_id, teams, match_hash)
                         VALUES (?, ?, 'RESERVED', ?, ?, ?, ?)
-                    """, (tx_id, float(amount), int(time.time()), table_id, teams, match_hash))
-                    self.conn.execute("UPDATE balance SET current_balance = current_balance - ? WHERE id = 1", (float(amount),))
+                    """, (tx_id, amt, int(time.time()), table_id, teams, match_hash))
+                    self.conn.execute("UPDATE balance SET current_balance = current_balance - ? WHERE id = 1", (amt,))
                     self.conn.execute("COMMIT")
                 except:
                     self.conn.execute("ROLLBACK")
                     raise
 
     def mark_pre_commit(self, tx_id):
-        """Fase 1.5: Write-Ahead Log dell'intento di click."""
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
@@ -98,23 +104,21 @@ class Database:
                     raise
 
     def pending(self):
-        """Ritorna tutte le transazioni in corso (RESERVED, PRE_COMMIT, PLACED, MANUAL_CHECK)."""
         with self._lock:
             return [dict(r) for r in self.conn.execute("SELECT * FROM journal WHERE status NOT IN ('VOID', 'SETTLED')").fetchall()]
 
     def get_unsettled_placed(self):
-        """Ritorna le transazioni PLACED non ancora SETTLED (richiesto dal Controller)."""
         with self._lock:
             return [dict(r) for r in self.conn.execute("SELECT * FROM journal WHERE status='PLACED'").fetchall()]
 
     def rollback(self, tx_id):
-        """Annulla solo se in stato RESERVED."""
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
                     row = self.conn.execute("SELECT amount FROM journal WHERE tx_id = ? AND status = 'RESERVED'", (tx_id,)).fetchone()
-                    if row:
+                    # 🛡️ FIX: Sicurezza extra nel caso in cui vecchi dati corrotti siano già nel DB
+                    if row and row["amount"] is not None:
                         self.conn.execute("UPDATE journal SET status = 'VOID' WHERE tx_id = ?", (tx_id,))
                         self.conn.execute("UPDATE balance SET current_balance = current_balance + ? WHERE id = 1", (float(row["amount"]),))
                     self.conn.execute("COMMIT")
@@ -123,18 +127,16 @@ class Database:
                     raise
 
     def recover_reserved(self):
-        """Boot Recovery differenziato."""
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
-                    # 1. RESERVED -> Refund sicuro
                     rows = self.conn.execute("SELECT tx_id, amount FROM journal WHERE status='RESERVED'").fetchall()
                     for r in rows:
-                        self.conn.execute("UPDATE journal SET status='VOID' WHERE tx_id=?", (r["tx_id"],))
-                        self.conn.execute("UPDATE balance SET current_balance = current_balance + ? WHERE id = 1", (float(r["amount"]),))
+                        if r["amount"] is not None:
+                            self.conn.execute("UPDATE journal SET status='VOID' WHERE tx_id=?", (r["tx_id"],))
+                            self.conn.execute("UPDATE balance SET current_balance = current_balance + ? WHERE id = 1", (float(r["amount"]),))
                     
-                    # 2. PRE_COMMIT -> Zona d'ombra (MANUAL_CHECK)
                     self.conn.execute("UPDATE journal SET status='MANUAL_CHECK' WHERE status='PRE_COMMIT'")
                     self.conn.execute("COMMIT")
                 except:
