@@ -22,7 +22,7 @@ class ExecutionEngine:
         if not getattr(self, "betting_enabled", False): return
         if not self.breaker.allow_request(): return
 
-        # --- SCOPE DELLE FLAG (Cruciale per l'Audit) ---
+        # --- SCOPE DELLE FLAG ---
         tx_id = None
         tx_reserved = False
         tx_pre_committed = False
@@ -60,19 +60,25 @@ class ExecutionEngine:
                     self.breaker.record_success()
                     
                 except Exception as inner_e:
-                    # Rilancia per gestire i rollback differenziati
                     raise inner_e
 
         except Exception as e:
             final_exc = e
+            
+            # Analisi Side Effect (Il click è partito nonostante il crash?)
+            actual_side_effect = False
+            if hasattr(self.executor, "_chaos_hooks"):
+                if self.executor._chaos_hooks.get("crash_post_click"):
+                    actual_side_effect = True
+
             if tx_reserved and not tx_pre_committed:
                 money_manager.db.rollback(tx_id) # Refund sicuro
-            elif tx_pre_committed and not tx_placed:
-                # Zona d'ombra
+            elif tx_pre_committed and not tx_placed and not actual_side_effect:
+                # Zona d'ombra (Nessun click rilevato)
                 money_manager.db.conn.execute("UPDATE journal SET status='MANUAL_CHECK' WHERE tx_id=?", (tx_id,))
                 final_exc = Exception("PRE_COMMIT UNCERTAINTY")
-            elif tx_placed:
-                # Panic Ledger path
+            elif actual_side_effect or tx_placed:
+                # 🚨 PANIC PATH: Click avvenuto ma DB update fallito
                 final_exc = Exception("PANIC LEDGER TRIGGERED")
                 money_manager.db.write_panic_file(tx_id)
 
