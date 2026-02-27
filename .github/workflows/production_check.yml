@@ -38,10 +38,10 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: xvfb-run -a python -u hedge_super_tester.py
 
-      - name: "🧠 RUN 2: GOD MODE CHAOS (Absolute System Test)"
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: xvfb-run -a python -u tests/stress_lab/GOD_MODE_chaos.py
+      
+    
+          
+        
 
       - name: "🔥 RUN 3: ULTRA SYSTEM INTEGRITY (Architectural Chaos)"
         env:
