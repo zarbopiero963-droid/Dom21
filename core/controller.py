@@ -34,26 +34,25 @@ class SuperAgentController(QObject):
 
         self.db = Database()
         
-        # 🚑 PANIC LEDGER RECOVERY (Deve girare prima di ogni altra cosa)
+        # 🚑 PANIC LEDGER RECOVERY
         try:
             self.db.resolve_panics()
         except Exception as e:
             self.logger.error(f"Panic Ledger Recovery fallito: {e}")
 
-        # 🔒 Crash Recovery 2-Phase (Bootloader)
+        # 🔒 Crash Recovery 2-Phase
         try:
             self.db.recover_reserved()
             self.logger.info("🧹 Boot Recovery: Cleaned up orphaned RESERVED transactions.")
         except Exception as e:
             self.logger.error(f"Recovery RESERVED fallita: {e}")
 
-        # 🔴 RECOVERY BET PLACED NON CHIUSE (Allineamento Test/Realtà)
+        # 🔴 RECOVERY BET PLACED NON CHIUSE
         try:
             placed = self.db.get_unsettled_placed()
             if placed:
                 self.logger.critical(f"♻️ RECOVERY: Trovate {len(placed)} PLACED post-crash.")
                 self.logger.critical("⚠️ LE SCOMMESSE RESTANO PLACED: Sarà il check_settled_bets a verificare l'esito reale.")
-                # NESSUN VOID QUI. IL VOID QUI È BANCAROTTA.
         except Exception as e:
             self.logger.error(f"Placed recovery error: {e}")
 
@@ -108,22 +107,30 @@ class SuperAgentController(QObject):
         if self.telegram and not getattr(self.telegram, "running", False):
             self.telegram.start()
 
-    # 🛡️ FIX GRACEFUL SHUTDOWN: Applicato
     def stop(self):
         self.logger.warning("🔴 STOP MOTORE: Blocco ricezione nuovi segnali.")
         self.is_running = False
         if hasattr(self, "engine"): 
             self.engine.betting_enabled = False
             
-        # Attesa operazioni in volo prima di staccare la spina
         self.logger.info("⏳ Graceful Shutdown: attesa completamento operazioni in corso...")
+        
+        # 🛡️ FIX GRACEFUL SHUTDOWN 1: Attesa Semaphore (Sincronizzazione di memoria)
+        try:
+            if hasattr(self, "engine") and hasattr(self.engine, "sem"):
+                # Se il semaforo è occupato, aspetta fino a 15 secondi
+                self.engine.sem.acquire(timeout=15.0)
+                self.engine.sem.release()
+        except Exception:
+            pass
+
+        # 🛡️ FIX GRACEFUL SHUTDOWN 2: Attesa Database (Sincronizzazione Disco)
         max_wait = 15
         for _ in range(max_wait):
             try:
-                # Controlla se ci sono soldi sospesi o scommesse a metà (PRE_COMMIT o RESERVED)
                 in_flight = [p for p in self.money_manager.pending() if p["status"] in ["RESERVED", "PRE_COMMIT"]]
                 if not in_flight:
-                    break  # Via libera, niente in volo
+                    break  
             except Exception:
                 pass
             time.sleep(1)
@@ -137,7 +144,6 @@ class SuperAgentController(QObject):
         if hasattr(self, "telegram") and self.telegram:
             self.telegram.stop()
 
-    # Alias per retrocompatibilità coi vecchi test/UI
     def stop_listening(self):
         self.stop()
 
@@ -239,14 +245,24 @@ class SuperAgentController(QObject):
             if not self.is_running: continue
 
             # 1. Thread del Worker
-            if self.worker and hasattr(self.worker, 'thread') and self.worker.thread:
-                if not self.worker.thread.is_alive():
+            if self.worker:
+                is_dead = False
+                if hasattr(self.worker, 'running'):
+                    is_dead = not self.worker.running
+
+                if is_dead:
                     self.logger.critical("📡 Worker Thread morto silenziosamente. Innesco riavvio...")
                     self._nuclear_restart_worker()
             
-            # 2. Telegram Thread
-            if self.telegram and hasattr(self.telegram, 'thread') and self.telegram.thread:
-                if not self.telegram.thread.is_alive():
+            # 🛡️ FIX WATCHDOG CRASH: Compatibilità PyQt/PySide per i QThread
+            if self.telegram:
+                is_dead = False
+                if hasattr(self.telegram, 'isRunning') and callable(self.telegram.isRunning):
+                    is_dead = not self.telegram.isRunning()
+                elif hasattr(self.telegram, 'running'):
+                    is_dead = not self.telegram.running
+                    
+                if is_dead:
                     self.logger.error("📡 Telegram Zombie. Riavvio...")
                     try:
                         self.telegram.stop()
