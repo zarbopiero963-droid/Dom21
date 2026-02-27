@@ -1,8 +1,8 @@
-import sqlite3
 import os
 import time
 import logging
 import threading
+import sqlite3
 from pathlib import Path
 
 DB_DIR = os.path.join(str(Path.home()), ".superagent_data")
@@ -190,6 +190,30 @@ class Database:
                 except: 
                     self.conn.execute("ROLLBACK")
                     raise
+
+    # 🚨 PANIC LEDGER: OS-Level Fallback per I/O Failures estremi
+    def write_panic_file(self, tx_id):
+        try:
+            with open(os.path.join(DB_DIR, f"{tx_id}.panic"), "w") as f:
+                f.write("PLACED")
+        except: pass
+
+    def resolve_panics(self):
+        with self._write_lock:
+            with self._lock:
+                import glob
+                panic_files = glob.glob(os.path.join(DB_DIR, "*.panic"))
+                for p_file in panic_files:
+                    tx_id = os.path.basename(p_file).replace(".panic", "")
+                    try:
+                        self.conn.execute("BEGIN IMMEDIATE")
+                        self.conn.execute("UPDATE journal SET status='PLACED' WHERE tx_id=?", (tx_id,))
+                        self.conn.execute("COMMIT")
+                        os.remove(p_file)
+                        logging.getLogger("Database").critical(f"🚑 PANIC LEDGER: TX {tx_id} salvata e forzata a PLACED!")
+                    except Exception as e:
+                        self.conn.execute("ROLLBACK")
+                        logging.getLogger("Database").error(f"Errore Panic Ledger: {e}")
 
     def close(self):
         try: self.conn.close()
