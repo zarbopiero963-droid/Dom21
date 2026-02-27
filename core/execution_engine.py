@@ -31,7 +31,7 @@ class ExecutionEngine:
         
         teams = payload.get("teams", "Unknown")
         
-        # 🛡️ FIX 2: Parsing robusto dello stake contro payload corrotti o nulli
+        # 🛡️ FIX: Parsing robusto dello stake contro payload corrotti o nulli (ZOMBIE_TX)
         raw_stake = payload.get("stake")
         stake = float(raw_stake) if raw_stake is not None else 2.0
 
@@ -62,7 +62,7 @@ class ExecutionEngine:
                     money_manager.db.mark_placed(tx_id)
                     self.breaker.record_success()
                     
-                    # 📢 NOTIFICA SUCCESSO ALL'EVENT BUS (Sblocca i test in ascolto)
+                    # 📢 NOTIFICA SUCCESSO ALL'EVENT BUS
                     self.logger.info(f"✅ Bet PLACED e certificata dal bookmaker: {stake}€")
                     self.bus.emit("BET_SUCCESS", {"tx_id": tx_id, "teams": teams, "stake": stake, "odds": 2.0})
                     
