@@ -121,7 +121,7 @@ if err["v"]: fail("DATABASE", "Race Condition su scrittura SQLite!")
 else: ok("Database WAL Mode: CONCORRENZA PERFETTA")
 # --- FINE FIX SPAM/RACE CONDITION ---
 
-for p in controller.money_manager.db.pending(): controller.money_manager.refund(p['tx_id'])
+for p in controller.money_manager.pending(): controller.money_manager.refund(p['tx_id'])
 
 controller.money_manager.get_stake = lambda o, teams="": {"stake": 5.0, "table_id": 1} # 🛡️ FIX Ritorno Roserpina Formattato
 before = controller.money_manager.bankroll()
@@ -134,8 +134,8 @@ controller.engine.process_signal({"teams": "A-B", "market": "1", "is_active": Tr
 after = controller.money_manager.bankroll()
 
 # 🔴 FIX 2PC: Controllo Finanziario Rigoroso per il GOD_MODE
-zombies_reserved = [p for p in controller.money_manager.db.pending() if p['status'] == 'RESERVED']
-zombies_placed = [p for p in controller.money_manager.db.pending() if p['status'] == 'PLACED']
+zombies_reserved = [p for p in controller.money_manager.pending() if p['status'] == 'RESERVED']
+zombies_placed = [p for p in controller.money_manager.pending() if p['status'] == 'PLACED']
 
 if len(zombies_reserved) > 0:
     fail("DATABASE", f"Race Condition! Trovate {len(zombies_reserved)} RESERVED zombie (Fase 1 incompleta).")
@@ -150,7 +150,7 @@ original_sleep(1)
 if not controller.worker.thread or not controller.worker.thread.is_alive(): fail("FREEZE", "Worker Thread morto silenziosamente")
 else: ok("Sistema REATTIVO")
 
-for p in controller.money_manager.db.pending(): controller.money_manager.refund(p['tx_id'])
+for p in controller.money_manager.pending(): controller.money_manager.refund(p['tx_id'])
 
 try:
     commit_ok = {"status": False}
@@ -158,7 +158,7 @@ try:
     
     # 🛡️ FIX 2 (Two-Phase Commit): Tolto il parametro 'self' fittizio. 
     def mock_place_2phase(teams, market, stake):
-        if len(controller.money_manager.db.pending()) > 0: commit_ok["status"] = True
+        if len(controller.money_manager.pending()) > 0: commit_ok["status"] = True
         controller.worker.executor.mock_balance -= float(stake)
         return True
     
@@ -189,8 +189,14 @@ except Exception as e: fail("BLIND BALANCE", f"Crash su grafica cambiata: {e}")
 
 try:
     session_checked = {"status": False}
-    controller.worker.executor.ensure_login = lambda: session_checked.update({"status": True})
+    # 🛡️ FIX: Aggiornato all'architettura V2.1 (is_logged_in al posto di ensure_login)
+    def mock_is_logged_in():
+        session_checked["status"] = True
+        return True
+    
+    controller.worker.executor.is_logged_in = mock_is_logged_in
     controller.engine.process_signal({"teams": "SESSION", "market": "1", "is_active": True}, controller.money_manager)
+    
     if not session_checked["status"]: fail("SESSION RISK", "Login non verificato pre-bet!")
     else: ok("Session Loss Protection OK")
 except Exception as e: fail("SESSION RISK", str(e))
@@ -212,9 +218,9 @@ try:
     orig_reserve = controller.money_manager.reserve
     
     # 🛡️ FIX 3 (Duplicate Bombing): Aggiunti i parametri corretti
-    def mock_reserve(amount, table_id=1, teams=""):
+    def mock_reserve(amount, table_id=1, teams="", match_hash=""):
         reservations["count"] += 1
-        return orig_reserve(amount, table_id=table_id, teams=teams)
+        return orig_reserve(amount, table_id=table_id, teams=teams, match_hash=match_hash)
     
     controller.money_manager.reserve = mock_reserve
     
@@ -240,6 +246,13 @@ try:
     ok("Browser Zombie Protection OK")
     controller.worker.executor.find_odds = orig_find_odds
 except Exception as e: fail("BROWSER ZOMBIE", str(e))
+
+# 🛡️ FIX 4: Pulizia Pending usando l'API corretta del MoneyManager (e non il Database diretto)
+try:
+    for p in controller.money_manager.pending(): 
+        controller.money_manager.refund(p['tx_id'])
+except Exception as e:
+    print(f"⚠️ Errore silenziato durante la pulizia pending: {e}")
 
 controller.stop_listening()
 controller.worker.stop()
