@@ -23,6 +23,13 @@ class DomExecutorPlaywright:
         self.logger.info("🔌 Chiusura risorse browser.")
         return True
 
+    # 🛡️ FIX: Metodo di Garbage Collection / RAM Flush richiesto dal Worker
+    def recycle_browser(self):
+        """Chiude e riavvia il browser per prevenire memory leaks."""
+        self.logger.info("♻️ Riciclo istanza Playwright in corso (Flush Memoria)...")
+        self.close()
+        return self.launch_browser()
+
     def is_logged_in(self) -> bool:
         if self._chaos_hooks.get("session_drop"):
             self._mock_logged_in = False
