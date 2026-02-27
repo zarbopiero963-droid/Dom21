@@ -15,11 +15,8 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
-        self.conn.execute("PRAGMA busy_timeout=5000;")
-        
         self._lock = threading.RLock()
         self._write_lock = threading.Lock()
-        
         self._init_db()
 
     def _init_db(self):
@@ -38,80 +35,41 @@ class Database:
                         match_hash TEXT DEFAULT ''
                     )
                 """)
-                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON journal(status);")
-                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ts ON journal(timestamp);")
-                
-                # Anti-duplicate copre sia RESERVED che PLACED
-                self.conn.execute("""
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_pending_match
-                    ON journal(match_hash)
-                    WHERE status IN ('RESERVED', 'PLACED')
-                """)
-
-                try: self.conn.execute("ALTER TABLE journal ADD COLUMN table_id INTEGER DEFAULT 1")
-                except: pass
-                try: self.conn.execute("ALTER TABLE journal ADD COLUMN teams TEXT DEFAULT ''")
-                except: pass
-                try: self.conn.execute("ALTER TABLE journal ADD COLUMN match_hash TEXT DEFAULT ''")
-                except: pass
-
                 self.conn.execute("CREATE TABLE IF NOT EXISTS balance (id INTEGER PRIMARY KEY CHECK (id = 1), current_balance REAL, peak_balance REAL DEFAULT 1000.0)")
                 self.conn.execute("INSERT OR IGNORE INTO balance (id, current_balance, peak_balance) VALUES (1, 1000.0, 1000.0)")
-                self.conn.execute("CREATE TABLE IF NOT EXISTS roserpina_tables (table_id INTEGER PRIMARY KEY, profit REAL DEFAULT 0.0, loss REAL DEFAULT 0.0, in_recovery INTEGER DEFAULT 0)")
-                for i in range(1, 6): self.conn.execute("INSERT OR IGNORE INTO roserpina_tables (table_id) VALUES (?)", (i,))
-
-    def maintain_wal(self):
-        wal_path = DB_PATH + "-wal"
-        if os.path.exists(wal_path) and os.path.getsize(wal_path) > 50 * 1024 * 1024:
-            try: self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-            except: pass
 
     def get_balance(self):
         with self._lock:
             row = self.conn.execute("SELECT current_balance, peak_balance FROM balance WHERE id = 1").fetchone()
             return (float(row["current_balance"]), float(row["peak_balance"])) if row else (0.0, 0.0)
 
-    def update_bankroll(self, amount):
-        with self._write_lock:
-            with self._lock:
-                self.conn.execute("BEGIN IMMEDIATE")
-                try:
-                    self.conn.execute("UPDATE balance SET current_balance = ?, peak_balance = MAX(peak_balance, ?) WHERE id = 1", (float(amount), float(amount)))
-                    self.conn.execute("COMMIT")
-                except: 
-                    self.conn.execute("ROLLBACK")
-                    raise
-
-    # 🛑 FASE 1: RESERVED
     def reserve(self, tx_id, amount, table_id=1, teams="", match_hash=""):
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
-                    if match_hash:
-                        existing = self.conn.execute(
-                            "SELECT 1 FROM journal WHERE match_hash = ? AND status IN ('RESERVED', 'PLACED')",
-                            (match_hash,)
-                        ).fetchone()
-                        if existing:
-                            self.conn.execute("ROLLBACK")
-                            raise ValueError("Duplicate active match detected")
-
                     self.conn.execute("""
                         INSERT INTO journal (tx_id, amount, status, timestamp, table_id, teams, match_hash)
                         VALUES (?, ?, 'RESERVED', ?, ?, ?, ?)
                     """, (tx_id, float(amount), int(time.time()), table_id, teams, match_hash))
-
-                    self.conn.execute(
-                        "UPDATE balance SET current_balance = current_balance - ? WHERE id = 1",
-                        (float(amount),)
-                    )
+                    self.conn.execute("UPDATE balance SET current_balance = current_balance - ? WHERE id = 1", (float(amount),))
                     self.conn.execute("COMMIT")
-                except: 
+                except:
                     self.conn.execute("ROLLBACK")
                     raise
 
-    # 🛑 FASE 2: PLACED (Dopo ACK del Bookmaker)
+    def mark_pre_commit(self, tx_id):
+        """Fase 1.5: Write-Ahead Log dell'intento di click."""
+        with self._write_lock:
+            with self._lock:
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self.conn.execute("UPDATE journal SET status='PRE_COMMIT' WHERE tx_id=?", (tx_id,))
+                    self.conn.execute("COMMIT")
+                except:
+                    self.conn.execute("ROLLBACK")
+                    raise
+
     def mark_placed(self, tx_id):
         with self._write_lock:
             with self._lock:
@@ -123,22 +81,8 @@ class Database:
                     self.conn.execute("ROLLBACK")
                     raise
 
-    # 🛑 FASE 3: SETTLED (Dopo esito partita)
-    def commit(self, tx_id, payout):
-        with self._write_lock:
-            with self._lock:
-                self.conn.execute("BEGIN IMMEDIATE")
-                try:
-                    self.conn.execute("UPDATE journal SET status = 'SETTLED', payout = ? WHERE tx_id = ?", (float(payout), tx_id))
-                    if float(payout) > 0: 
-                        self.conn.execute("UPDATE balance SET peak_balance = MAX(peak_balance, current_balance + ?), current_balance = current_balance + ? WHERE id = 1", (float(payout), float(payout)))
-                    self.conn.execute("COMMIT")
-                except: 
-                    self.conn.execute("ROLLBACK")
-                    raise
-
-    # 🛑 ROLLBACK SICURO (Annulla solo le RESERVED)
     def rollback(self, tx_id):
+        """Annulla solo se in stato RESERVED."""
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
@@ -148,50 +92,29 @@ class Database:
                         self.conn.execute("UPDATE journal SET status = 'VOID' WHERE tx_id = ?", (tx_id,))
                         self.conn.execute("UPDATE balance SET current_balance = current_balance + ? WHERE id = 1", (float(row["amount"]),))
                     self.conn.execute("COMMIT")
-                except: 
+                except:
                     self.conn.execute("ROLLBACK")
                     raise
 
-    # 🛑 RECOVERY BOOT: Spazza via gli zombie pre-crash
     def recover_reserved(self):
+        """Boot Recovery differenziato."""
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
+                    # 1. RESERVED -> Refund sicuro
                     rows = self.conn.execute("SELECT tx_id, amount FROM journal WHERE status='RESERVED'").fetchall()
                     for r in rows:
                         self.conn.execute("UPDATE journal SET status='VOID' WHERE tx_id=?", (r["tx_id"],))
                         self.conn.execute("UPDATE balance SET current_balance = current_balance + ? WHERE id = 1", (float(r["amount"]),))
+                    
+                    # 2. PRE_COMMIT -> Zona d'ombra (MANUAL_CHECK)
+                    self.conn.execute("UPDATE journal SET status='MANUAL_CHECK' WHERE status='PRE_COMMIT'")
                     self.conn.execute("COMMIT")
                 except:
                     self.conn.execute("ROLLBACK")
                     raise
 
-    # 🛑 GET PLACED TRANSACTIONS (Per il test GOD_MODE_V2 e boot logic)
-    def get_unsettled_placed(self):
-        with self._lock:
-            return [dict(r) for r in self.conn.execute("SELECT * FROM journal WHERE status='PLACED'").fetchall()]
-
-    def pending(self):
-        with self._lock: 
-            return [dict(r) for r in self.conn.execute("SELECT * FROM journal WHERE status IN ('RESERVED', 'PLACED') ORDER BY timestamp ASC").fetchall()]
-
-    def get_roserpina_tables(self):
-        with self._lock: 
-            return [dict(r) for r in self.conn.execute("SELECT * FROM roserpina_tables ORDER BY table_id ASC").fetchall()]
-
-    def update_roserpina_table(self, table_id, profit_delta, loss_delta, in_recovery):
-        with self._write_lock:
-            with self._lock:
-                self.conn.execute("BEGIN IMMEDIATE")
-                try:
-                    self.conn.execute("UPDATE roserpina_tables SET profit = profit + ?, loss = loss + ?, in_recovery = ? WHERE table_id = ?", (float(profit_delta), float(loss_delta), int(in_recovery), table_id))
-                    self.conn.execute("COMMIT")
-                except: 
-                    self.conn.execute("ROLLBACK")
-                    raise
-
-    # 🚨 PANIC LEDGER: OS-Level Fallback per I/O Failures estremi
     def write_panic_file(self, tx_id):
         try:
             with open(os.path.join(DB_DIR, f"{tx_id}.panic"), "w") as f:
@@ -199,22 +122,14 @@ class Database:
         except: pass
 
     def resolve_panics(self):
+        import glob
         with self._write_lock:
             with self._lock:
-                import glob
-                panic_files = glob.glob(os.path.join(DB_DIR, "*.panic"))
-                for p_file in panic_files:
+                for p_file in glob.glob(os.path.join(DB_DIR, "*.panic")):
                     tx_id = os.path.basename(p_file).replace(".panic", "")
                     try:
                         self.conn.execute("BEGIN IMMEDIATE")
                         self.conn.execute("UPDATE journal SET status='PLACED' WHERE tx_id=?", (tx_id,))
                         self.conn.execute("COMMIT")
                         os.remove(p_file)
-                        logging.getLogger("Database").critical(f"🚑 PANIC LEDGER: TX {tx_id} salvata e forzata a PLACED!")
-                    except Exception as e:
-                        self.conn.execute("ROLLBACK")
-                        logging.getLogger("Database").error(f"Errore Panic Ledger: {e}")
-
-    def close(self):
-        try: self.conn.close()
-        except: pass
+                    except: self.conn.execute("ROLLBACK")
