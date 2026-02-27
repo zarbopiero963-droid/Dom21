@@ -15,9 +15,10 @@ class ExecutionEngine:
         self.betting_enabled = False
         self.sem = threading.Semaphore(1)
         
-        # 🛡️ TRANSACTION GUARD
-        self.active_transaction = False
-        self.tx_lock = threading.Lock()
+        # 🛡️ BARRIER DI DRAIN COMPLETO (Contatore Atomico)
+        self._shutdown_event = threading.Event()
+        self._active_tx_lock = threading.Lock()
+        self._active_tx = 0
         
         self._processing_lock = threading.Lock()
         self._processing_matches = set()
@@ -26,6 +27,7 @@ class ExecutionEngine:
         self.force_abort = False
 
     def _safe_float(self, val: Any, default: float = 2.0) -> float:
+        """🛡️ Scudo Type-Safety: Converte stringhe sporche e None in Float sicuri."""
         if val is None: return default
         if isinstance(val, (int, float)): return float(val)
         try:
@@ -40,100 +42,108 @@ class ExecutionEngine:
             return default
 
     def process_signal(self, payload: Dict[str, Any], money_manager) -> None:
-        if not getattr(self, "betting_enabled", False): return
-        if not self.breaker.allow_request(): return
-
-        tx_id = None
-        tx_reserved = False
-        tx_pre_committed = False
-        tx_placed = False
-        teams = payload.get("teams", "Unknown")
-        stake = self._safe_float(payload.get("stake"), default=2.0)
-
-        if stake <= 0:
-            self.logger.error(f"❌ Stake non valido ({stake}). Transazione abortita.")
-            return
+        # 🛡️ ISTRUZIONE ZERO: Incremento incondizionato della barriera atomica
+        with self._active_tx_lock:
+            self._active_tx += 1
 
         try:
-            self.sem.acquire()
-            
-            # 🛡️ BLOCCO INIZIO TRANSAZIONE
-            with self.tx_lock:
-                self.active_transaction = True
-                
-            self.current_bet_start = time.time()
-            
-            if hasattr(self.executor, "is_logged_in") and not self.executor.is_logged_in():
-                raise Exception("SESSION INVALID - Login check fallito pre-bet")
+            # Ora siamo blindati. Qualsiasi thread di shutdown si metterà in attesa.
+            if not getattr(self, "betting_enabled", False): 
+                return
+            if not self.breaker.allow_request(): 
+                return
 
-            # 1. RESERVE
-            tx_id = str(uuid.uuid4())
-            money_manager.db.reserve(tx_id, stake, teams=teams)
-            tx_reserved = True
+            tx_id = None
+            tx_reserved = False
+            tx_pre_committed = False
+            tx_placed = False
+            teams = payload.get("teams", "Unknown")
+            stake = self._safe_float(payload.get("stake"), default=2.0)
+
+            if stake <= 0:
+                self.logger.error(f"❌ Stake non valido ({stake}). Transazione abortita.")
+                return
 
             try:
-                # 2. PRE_COMMIT
-                money_manager.db.mark_pre_commit(tx_id)
-                tx_pre_committed = True
-
-                # 3. CLICK
-                bet_ok = self.executor.place_bet(teams, "1", stake)
-                if not bet_ok: raise RuntimeError("Click fallito")
-
-                # 4. PLACED
-                tx_placed = True
-                money_manager.db.mark_placed(tx_id)
-                self.breaker.record_success()
+                self.sem.acquire()
+                self.current_bet_start = time.time()
                 
-                self.logger.info(f"✅ Bet PLACED e certificata: {stake}€ su {teams}")
-                self.bus.emit("BET_SUCCESS", {"tx_id": tx_id, "teams": teams, "stake": stake, "odds": 2.0})
+                if hasattr(self.executor, "is_logged_in") and not self.executor.is_logged_in():
+                    raise Exception("SESSION INVALID - Login check fallito pre-bet")
+
+                # 1. RESERVE
+                tx_id = str(uuid.uuid4())
+                money_manager.db.reserve(tx_id, stake, teams=teams)
+                tx_reserved = True
+
+                try:
+                    # 2. PRE_COMMIT
+                    money_manager.db.mark_pre_commit(tx_id)
+                    tx_pre_committed = True
+
+                    # 3. CLICK
+                    bet_ok = self.executor.place_bet(teams, "1", stake)
+                    if not bet_ok: raise RuntimeError("Click fallito")
+
+                    # 4. PLACED
+                    tx_placed = True
+                    money_manager.db.mark_placed(tx_id)
+                    self.breaker.record_success()
+                    
+                    self.logger.info(f"✅ Bet PLACED e certificata: {stake}€ su {teams}")
+                    self.bus.emit("BET_SUCCESS", {"tx_id": tx_id, "teams": teams, "stake": stake, "odds": 2.0})
+                    
+                except Exception as inner_e:
+                    raise inner_e
+
+            except Exception as e:
+                final_exc = e
+                actual_side_effect = False
+                if hasattr(self.executor, "_chaos_hooks"):
+                    if self.executor._chaos_hooks.get("crash_post_click"):
+                        actual_side_effect = True
+
+                if tx_reserved and not tx_pre_committed:
+                    money_manager.db.rollback(tx_id)
+                elif tx_pre_committed and not tx_placed and not actual_side_effect:
+                    money_manager.db.conn.execute("UPDATE journal SET status='MANUAL_CHECK' WHERE tx_id=?", (tx_id,))
+                    final_exc = Exception("PRE_COMMIT UNCERTAINTY")
+                elif actual_side_effect or tx_placed:
+                    final_exc = Exception("PANIC Ledger Triggered")
+                    money_manager.db.write_panic_file(tx_id)
+
+                self.breaker.record_failure(final_exc)
+                self.logger.error(f"❌ Bet Fallita: {final_exc}")
+                self.bus.emit("BET_FAILED", {"tx_id": tx_id, "reason": str(final_exc)})
                 
-            except Exception as inner_e:
-                raise inner_e
+            finally:
+                self.current_bet_start = 0
+                self.sem.release()
 
-        except Exception as e:
-            final_exc = e
-            actual_side_effect = False
-            if hasattr(self.executor, "_chaos_hooks"):
-                if self.executor._chaos_hooks.get("crash_post_click"):
-                    actual_side_effect = True
-
-            if tx_reserved and not tx_pre_committed:
-                money_manager.db.rollback(tx_id)
-            elif tx_pre_committed and not tx_placed and not actual_side_effect:
-                money_manager.db.conn.execute("UPDATE journal SET status='MANUAL_CHECK' WHERE tx_id=?", (tx_id,))
-                final_exc = Exception("PRE_COMMIT UNCERTAINTY")
-            elif actual_side_effect or tx_placed:
-                final_exc = Exception("PANIC Ledger Triggered")
-                money_manager.db.write_panic_file(tx_id)
-
-            self.breaker.record_failure(final_exc)
-            self.logger.error(f"❌ Bet Fallita: {final_exc}")
-            self.bus.emit("BET_FAILED", {"tx_id": tx_id, "reason": str(final_exc)})
-            
         finally:
-            self.current_bet_start = 0
-            # 🛡️ SBLOCCO FINE TRANSAZIONE
-            with self.tx_lock:
-                self.active_transaction = False
-            self.sem.release()
+            # 🛡️ USCITA ATOMICA: Garantita sempre, anche in caso di return anticipati, timeout o eccezioni fatali
+            with self._active_tx_lock:
+                self._active_tx -= 1
 
-    # 🛡️ LA NUOVA FUNZIONE DI SHUTDOWN ATOMICO
     def stop_engine(self):
-        """Ferma l'accettazione di nuovi segnali e attende il completamento della transazione in corso."""
-        self.logger.warning("🔴 Chiusura ExecutionEngine: Blocco nuovi segnali.")
+        """Ferma l'accettazione di nuovi segnali e attende il completamento (Barrier Drain)."""
+        self.logger.info("🔴 STOP MOTORE: Blocco nuovi segnali.")
         self.betting_enabled = False
-        
+        self._shutdown_event.set()
+
         timeout = 30
         start = time.time()
+
         while True:
-            with self.tx_lock:
-                is_active = self.active_transaction
-            if not is_active:
-                break
+            with self._active_tx_lock:
+                # La Barriera: Usciamo dal loop solo quando zero transazioni sono attive nel blocco principale
+                if self._active_tx == 0:
+                    break
+
             if time.time() - start > timeout:
-                self.logger.error("⚠️ Timeout attesa transazione attiva. Forzatura chiusura.")
+                self.logger.critical("💀 Shutdown timeout. Transazione ancora attiva. Forzatura chiusura.")
                 break
-            time.sleep(0.1)
-            
-        self.logger.info("🛑 ExecutionEngine fermato in sicurezza.")
+
+            time.sleep(0.05)
+
+        self.logger.info("🛑 Motore fermato in sicurezza.")
