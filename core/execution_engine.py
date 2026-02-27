@@ -5,6 +5,8 @@ import re
 import threading
 from typing import Dict, Any
 
+from core.circuit_breaker import CircuitBreaker
+
 class ExecutionEngine:
     def __init__(self, bus, executor, logger=None):
         self.bus = bus
@@ -12,16 +14,15 @@ class ExecutionEngine:
         self.logger = logger or logging.getLogger("ExecutionEngine")
         self.betting_enabled = False
         
+        # Inizializziamo il nuovo Breaker Adattivo
+        self.breaker = CircuitBreaker(logger=self.logger)
+        
         self.sem = threading.Semaphore(1)
         self._processing_lock = threading.Lock()
         self._processing_matches = set()
         
         self._state_lock = threading.Lock()
-        self.consecutive_crashes = 0
         self.last_activity = time.time()
-        self.breaker_time = 0
-        self.breaker_cooldown = 600
-        self.last_breaker_reason = ""
         
         self.max_bet_time = 120
         self.current_bet_start = 0
@@ -36,21 +37,9 @@ class ExecutionEngine:
             time.sleep(5)
             with self._state_lock:
                 is_enabled = getattr(self, "betting_enabled", False)
-                brk_time = getattr(self, "breaker_time", 0)
                 bet_start = getattr(self, "current_bet_start", 0)
                 tx = getattr(self, "current_tx_id", None)
                 mm = getattr(self, "current_money_manager", None)
-            
-            if not is_enabled and brk_time > 0:
-                if time.time() - brk_time > self.breaker_cooldown:
-                    if bet_start != 0: continue
-                    with self._state_lock:
-                        self.consecutive_crashes = 0
-                        self.betting_enabled = True
-                        self.breaker_time = 0
-                        self.last_breaker_reason = ""
-                        self.force_abort = False
-                    continue
 
             if not is_enabled or bet_start == 0: continue
 
@@ -63,23 +52,15 @@ class ExecutionEngine:
                         self.logger.critical(f"🚑 Zombie Reserve Rimborsata in emergenza dal Watchdog: {tx[:8]}")
                     except Exception as e:
                         self.logger.error(f"Errore Watchdog refund: {e}")
-                self.logger.critical("🔌 ENGINE AUTO-SHUTDOWN PER SICUREZZA")
+                self.logger.critical("🔌 ENGINE AUTO-SHUTDOWN PER DEADLOCK")
                 with self._state_lock:
                     self.force_abort = True  
                     self.current_bet_start = 0
                     self.current_tx_id = None
                     self.current_money_manager = None
-                self.trip_breaker("DEADLOCK BET TIMEOUT", force_stop=True)
-
-    def trip_breaker(self, reason="unknown", force_stop=False):
-        self.consecutive_crashes += 1
-        self.last_breaker_reason = reason
-        self.logger.critical(f"🛑 CIRCUIT BREAKER EVENT: {reason} | Fails: {self.consecutive_crashes}")
-        if self.consecutive_crashes >= 3 or force_stop:
-            self.logger.critical("🔌 CIRCUIT BREAKER HARD STOP. Motore disattivato (Cooldown: 10 min).")
-            self.betting_enabled = False
-            self.consecutive_crashes = 3
-            self.breaker_time = time.time()
+                
+                # Registriamo l'errore come operativo nel nuovo breaker
+                self.breaker.record_failure(RuntimeError("DEADLOCK BET TIMEOUT"))
 
     def _safe_float(self, value: Any) -> float:
         if isinstance(value, (int, float)): return float(value)
@@ -98,18 +79,19 @@ class ExecutionEngine:
     def process_signal(self, payload: Dict[str, Any], money_manager) -> None:
         self.last_activity = time.time()
         
+        if not getattr(self, "betting_enabled", False) or not payload.get("is_active", True): 
+            return
+
+        # 🛡️ INTERROGAZIONE DEL BREAKER ADATTIVO
+        if not self.breaker.allow_request():
+            self.logger.warning(f"🛑 Breaker {self.breaker.state.name}: Trading bloccato o in cooldown. Segnale ignorato.")
+            return
+
         with self._state_lock:
             if self.force_abort: self.force_abort = False
             self.current_money_manager = money_manager
             
         self.logger.info(f"⚙️ Avvio processing segnale: {payload.get('teams')}")
-
-        if self.consecutive_crashes >= 3:
-            self.betting_enabled = False
-            return
-
-        if not getattr(self, "betting_enabled", False): return
-        if not payload.get("is_active", True): return
 
         teams = payload.get("teams") or "" 
         teams_lower = str(teams).lower()
@@ -153,14 +135,12 @@ class ExecutionEngine:
 
                     self.last_activity = time.time()
                     if not self.executor.navigate_to_match(teams, is_live=is_live):
-                        self.bus.emit("BET_FAILED", {"reason": "Match not found"})
-                        return
+                        raise Exception("Match non trovato (Timeout / Not Found)")
 
                     raw_odds = self.executor.find_odds(teams, market)
                     odds = self._safe_float(raw_odds)
                     if odds <= 0:
-                        self.bus.emit("BET_FAILED", {"reason": "Odds not found or invalid"})
-                        return
+                        raise Exception("Quota non trovata (Timeout / Invalid Odds)")
 
                     mm_mode = payload.get("mm_mode", "Stake Fisso")
                     if mm_mode == "Roserpina (Progressione)":
@@ -180,8 +160,7 @@ class ExecutionEngine:
                     balance_before = self._safe_float(self.executor.get_balance())
                     if balance_before > 0 and balance_before < stake:
                         if tx_id: money_manager.refund(tx_id)
-                        self.bus.emit("BET_FAILED", {"reason": "Insufficient real balance"})
-                        return
+                        raise Exception("Saldo reale insufficiente sul bookmaker")
 
                     if mm_mode != "Roserpina (Progressione)":
                         tx_id = money_manager.reserve(stake, table_id=table_id, teams=teams)
@@ -193,17 +172,17 @@ class ExecutionEngine:
                     try:
                         bet_ok = self.executor.place_bet(teams, market, stake)
                         if not bet_ok:
-                            raise RuntimeError("Bet NON piazzata")
+                            raise RuntimeError("Timeout o errore click place_bet")
                             
                         # 🔒 PASSAGGIO FASE 2: Da RESERVED a PLACED
-                        bet_placed = True  # <--- SPOSTATO QUI: PRIMA DEL DB
+                        bet_placed = True
                         money_manager.db.mark_placed(tx_id)
                         self.last_activity = time.time()
                         
-                    except Exception as e:
+                    except Exception as inner_e:
                         if not bet_placed:
                             money_manager.refund(tx_id)
-                        raise
+                        raise inner_e
 
                     with self._state_lock:
                         if self.force_abort: raise RuntimeError("ZOMBIE THREAD ABORTED")
@@ -212,23 +191,26 @@ class ExecutionEngine:
 
                     if hasattr(self.executor, "bet_count"): self.executor.bet_count += 1
                         
-                    self.consecutive_crashes = 0
-                    self.breaker_time = 0
-                    self.last_breaker_reason = ""
+                    # 🟢 SUCCESS: Informiamo il breaker che è andato tutto liscio!
+                    self.breaker.record_success()
                     
                     self.bus.emit("BET_SUCCESS", {"tx_id": tx_id, "teams": teams, "stake": stake, "odds": odds})
 
                 except Exception as e:
+                    # 🔴 FAILURE: Informiamo il breaker dell'errore. Penserà lui a classificare il rischio.
+                    self.breaker.record_failure(e)
+                    
                     is_watchdog_abort = False
                     with self._state_lock: is_watchdog_abort = self.force_abort
                     
                     if not is_watchdog_abort:
-                        self.trip_breaker(f"Crash runtime: {e}")
                         if tx_id and not bet_placed:
                             money_manager.refund(tx_id)
                             self.logger.warning(f"🔄 Rollback FASE 1 (RESERVED) eseguito: {tx_id[:8]}")
                         elif tx_id and bet_placed:
                             self.logger.critical(f"☠️ Bet PLACED sul bookmaker {tx_id[:8]} - DB UPDATE FALLITO! Innesco PANIC LEDGER.")
+                            # Forziamo un errore strutturale nel breaker per bloccare tutto
+                            self.breaker.record_failure(Exception("PANIC LEDGER TRIGGERED"))
                             if hasattr(money_manager.db, 'write_panic_file'):
                                 money_manager.db.write_panic_file(tx_id)
 
