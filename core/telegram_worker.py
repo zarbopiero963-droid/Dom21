@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import logging
+import queue
 from queue import Full
 from pathlib import Path
 try:
@@ -54,7 +55,6 @@ class TelegramWorker(QThread):
 
         self.client = TelegramClient(StringSession(session_string), self.api_id, self.api_hash, device_model="SuperAgent")
 
-        # 🔴 FIX 3.2: Reconnect Storm Backoff
         max_retries = 8
         connected = False
         for attempt in range(max_retries):
@@ -87,12 +87,17 @@ class TelegramWorker(QThread):
             msg = event.raw_text
             
             if self.message_queue:
-                # 🔴 FIX 3.1: Throttle anti-flood (Drop oldest)
-                if self.message_queue.qsize() > 100:
-                    try: self.message_queue.get_nowait()
-                    except: pass
-                try: self.message_queue.put_nowait(msg)
-                except Full: pass
+                # 🛡️ FIX QUEUE RACE: Gestione Atomica Anti-Flood
+                if self.message_queue.full():
+                    try: 
+                        self.message_queue.get_nowait()
+                    except queue.Empty: 
+                        pass
+                        
+                try: 
+                    self.message_queue.put_nowait(msg)
+                except Full: 
+                    pass
             else:
                 self.message_received.emit(msg)
 
