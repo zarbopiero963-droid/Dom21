@@ -92,6 +92,14 @@ class BaseSecureManager:
                 self.logger.error(f"Errore caricamento {self.file_path}: {e}")
                 return {}
 
+    # 🛡️ FIX ARCHITETTURALE: Backward compatibility per la UI
+    def all(self) -> dict:
+        """
+        Espone l'interfaccia legacy attesa dai vari Tab della UI.
+        Ritorna il dizionario completo decrittato.
+        """
+        return self.load_all()
+
 
 class BookmakerManager(BaseSecureManager):
     def __init__(self, logger=None):
