@@ -3,8 +3,6 @@ import sys
 import logging
 import threading
 import time
-import sqlite3
-import traceback
 import psutil
 import signal
 from typing import Dict, Any
@@ -99,7 +97,8 @@ class SuperAgentController(QObject):
         self.engine.betting_enabled = True
 
         if not self._bus_started:
-            bus.start()
+            # Assumiamo che start non esista più e non sia necessario per EventBusV6,
+            # lo avviamo già nell'init dell'oggetto singleton
             self._bus_started = True
 
         with self._worker_lock:
@@ -118,7 +117,6 @@ class SuperAgentController(QObject):
         for _ in range(2): 
             time.sleep(0.5)
         
-        # 🛡️ FIX: Spegnimento Worker Sincronizzato per evitare Deadlock
         if hasattr(self, "worker") and self.worker:
             with self._worker_lock:
                 try: self.worker.stop()
@@ -164,7 +162,12 @@ class SuperAgentController(QObject):
     def process_signal(self, payload):
         if not self.is_running or self.circuit_open: return False
         
-        if bus._pending > 30: return False
+        try:
+            if bus.pending_count > 30:
+                return False
+        except AttributeError:
+            self.logger.critical("❌ Errore d'infrastruttura: EventBus non implementa 'pending_count'. Drop forzato.")
+            return False
 
         if isinstance(payload, str):
             payload = {"teams": "Auto", "market": "N/A", "raw_text": payload}
@@ -210,7 +213,6 @@ class SuperAgentController(QObject):
                     self.worker.stop()
                     for _ in range(4): time.sleep(0.5)
                     
-                    # 🛡️ FIX CHROME KILLER: Uccide SOLO i figli del processo Python corrente
                     try:
                         current_process = psutil.Process(os.getpid())
                         children = current_process.children(recursive=True)
