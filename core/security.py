@@ -42,3 +42,10 @@ class SecurityModule:
         except Exception as e:
             self.logger.critical(f"FATAL DECRYPT: Hardware modificato. ({e})")
             return ""
+
+# ------------------------------------------------------------------
+# 🔁 Backward Compatibility Layer
+# ------------------------------------------------------------------
+# Vecchi moduli (come tester_v4.py) si aspettano `Vault`.
+# Mappiamo l'alias direttamente sulla nuova classe blindata.
+Vault = SecurityModule
