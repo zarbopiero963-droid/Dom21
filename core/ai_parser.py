@@ -3,6 +3,7 @@ import os
 import requests
 import logging
 import time
+import re
 
 
 DEFAULT_API_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -54,10 +55,21 @@ class AISignalParser:
 
                 if response.status_code == 200:
                     raw = response.json()['choices'][0]['message']['content']
-                    clean = raw.replace("```json", "").replace("```", "").strip()
-                    data = json.loads(clean)
-                    self.logger.info(f"✅ AI OUTPUT: {data}")
-                    return data
+                    
+                    # 🛡️ FIX JSON: Regex inossidabile
+                    match = re.search(r'\{.*\}', raw, re.DOTALL)
+                    if not match:
+                        self.logger.error("❌ AI error: Nessun JSON trovato nella risposta.")
+                        continue
+                        
+                    clean = match.group(0)
+                    try:
+                        data = json.loads(clean)
+                        self.logger.info(f"✅ AI OUTPUT: {data}")
+                        return data
+                    except json.JSONDecodeError as e:
+                        self.logger.error(f"❌ AI JSON Parse error: {e} su stringa: {clean}")
+                        continue
 
                 elif response.status_code == 429:
                     self.logger.warning(f"⚠️ Rate limit. Retry {attempt + 1}/3...")
