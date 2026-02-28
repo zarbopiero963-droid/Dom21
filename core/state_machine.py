@@ -3,7 +3,6 @@ import threading
 from enum import Enum, auto
 from typing import Callable, List
 
-# 🔴 FIX PYSIDE6 IN GITHUB ACTIONS
 try:
     from PySide6.QtCore import QObject, Signal
 except ImportError:
@@ -123,8 +122,20 @@ class StateManager(QObject):
     def force_state(self, state: AgentState):
         with self._lock:
             old = self._state
+            
+            # 🛡️ FIX: Esegui i cleanup anche in caso di forzatura stato
+            for cb in self._on_exit_callbacks.get(old, []):
+                try:
+                    cb()
+                except Exception as e:
+                    self.logger.error(f"[StateMachine] force_state on_exit error: {e}")
+                    
             self._state = state
+            self._history.append((time.time(), old, state))
+            self._history = self._history[-100:]
+            
             self.logger.warning("[StateMachine] FORCED: %s -> %s", old.name, state.name)
+            
         self.state_changed.emit(state)
 
     def get_history(self, last_n: int = 20) -> list:
