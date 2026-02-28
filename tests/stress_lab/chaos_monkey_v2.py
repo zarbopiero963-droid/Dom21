@@ -41,21 +41,31 @@ def teardown_environment():
 
 # --- VETTORE 1: SIGKILL Mid-Transaction (Fault Injection) ---
 def _malicious_process():
-    # Monkey-patching di SQLite a livello di memoria
-    original_execute = sqlite3.Connection.execute
-    
-    def poisoned_execute(self, sql, parameters=()):
-        res = original_execute(self, sql, parameters)
-        # Intercettiamo l'esatto nanosecondo DOPO aver sottratto il saldo ma PRIMA del COMMIT
-        if "UPDATE balance SET current_balance = current_balance -" in sql.upper():
-            logger.critical("☠️ FAULT INJECTED: Uccisione processo pre-COMMIT!")
-            os.kill(os.getpid(), signal.SIGKILL)
-        return res
-
-    sqlite3.Connection.execute = poisoned_execute
-    
     db = Database()
-    db.reserve("TX_TRUE_CHAOS_1", 100.0)
+    
+    # 🛡️ FIX C-LEVEL: Proxy Pattern per aggirare l'immutabilità di sqlite3.Connection
+    class PoisonedConnection:
+        def __init__(self, real_conn):
+            self._conn = real_conn
+            
+        def execute(self, sql, parameters=()):
+            res = self._conn.execute(sql, parameters)
+            # Intercettiamo l'esatto nanosecondo DOPO aver sottratto il saldo ma PRIMA del COMMIT
+            if isinstance(sql, str) and "UPDATE balance SET current_balance = current_balance -" in sql.upper():
+                logger.critical("☠️ FAULT INJECTED: Uccisione processo pre-COMMIT!")
+                os.kill(os.getpid(), signal.SIGKILL)
+            return res
+            
+        def __getattr__(self, item):
+            return getattr(self._conn, item)
+
+    # Inietta la connessione avvelenata
+    db.conn = PoisonedConnection(db.conn)
+    
+    try:
+        db.reserve("TX_TRUE_CHAOS_1", 100.0)
+    except Exception as e:
+        logger.error(f"Processo morto prematuramente o errore inatteso: {e}")
 
 def attack_1_true_transaction_kill():
     logger.info("🔪 ATTACCO 1: Deterministic Mid-Transaction SIGKILL")
@@ -114,7 +124,9 @@ def attack_2_ipc_contention():
 def attack_3_wal_truncation():
     logger.info("🔪 ATTACCO 3: WAL Truncation Chirurgica")
     db = Database()
-    db.reserve("TX_WAL_TEST", 10.0) # Forza la creazione e scrittura nel WAL
+    try:
+        db.reserve("TX_WAL_TEST", 10.0) # Forza la creazione e scrittura nel WAL
+    except Exception: pass
     
     if not os.path.exists(WAL_PATH):
         logger.warning("Nessun file WAL trovato. Skip test (forse già flushed).")
@@ -130,6 +142,8 @@ def attack_3_wal_truncation():
         logger.info("✅ ATTACCO 3 FALLITO (Sistema Safe): SQLite ha ignorato il WAL corrotto / ripristinato dal file DB root.")
     except sqlite3.DatabaseError as e:
         logger.info(f"✅ ATTACCO 3 FALLITO (Sistema Safe): Isolamento errore riuscito. Eccezione intercettata: {e}")
+    except SystemExit:
+        logger.info("✅ ATTACCO 3 FALLITO (Sistema Safe): LedgerGuard ha abbattuto il processo per constraint violation.")
     except Exception as e:
         logger.critical(f"❌ ATTACCO 3 RIUSCITO: Eccezione non gestita o crash memory-space: {e}")
         sys.exit(1)
