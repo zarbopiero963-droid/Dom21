@@ -1,31 +1,38 @@
 import os
+import logging
 from pathlib import Path
 from cryptography.fernet import Fernet
 
-KEY_FILE = os.path.join(str(Path.home()), ".superagent_data", ".master.key")
-
 class CryptoVault:
-    @classmethod
-    def _get_key(cls):
-        if not os.path.exists(KEY_FILE):
+    def __init__(self, logger=None):
+        self.logger = logger or logging.getLogger("CryptoVault")
+        self.key_path = os.path.join(str(Path.home()), ".superagent_data", ".master.key")
+        self._key = self._load_or_create_key()
+        self.cipher = Fernet(self._key)
+
+    def _load_or_create_key(self):
+        os.makedirs(os.path.dirname(self.key_path), exist_ok=True)
+        if os.path.exists(self.key_path):
+            with open(self.key_path, "rb") as f:
+                return f.read()
+        else:
             key = Fernet.generate_key()
-            os.makedirs(os.path.dirname(KEY_FILE), exist_ok=True)
-            with open(KEY_FILE, "wb") as f: 
+            with open(self.key_path, "wb") as f:
                 f.write(key)
-        with open(KEY_FILE, "rb") as f: 
-            return f.read()
+            return key
 
-    @classmethod
-    def encrypt(cls, text):
-        if not text: return ""
-        f = Fernet(cls._get_key())
-        return f.encrypt(text.encode()).decode()
+    def encrypt(self, plain_text: str) -> str:
+        if not plain_text: return ""
+        try:
+            return self.cipher.encrypt(plain_text.encode('utf-8')).decode('utf-8')
+        except Exception as e:
+            self.logger.error(f"Encryption failed: {e}")
+            return ""
 
-    @classmethod
-    def decrypt(cls, cipher_text):
+    def decrypt(self, cipher_text: str) -> str:
         if not cipher_text: return ""
         try:
-            f = Fernet(cls._get_key())
-            return f.decrypt(cipher_text.encode()).decode()
-        except Exception:
+            return self.cipher.decrypt(cipher_text.encode('utf-8')).decode('utf-8')
+        except Exception as e:
+            self.logger.warning(f"Decryption failed. Data corrupted or Master Key mismatch. Error: {e}")
             return ""
