@@ -3,11 +3,8 @@ import os
 import requests
 import logging
 import time
-import re
-
 
 DEFAULT_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-
 
 class AISignalParser:
     def __init__(self, api_key=None):
@@ -56,13 +53,35 @@ class AISignalParser:
                 if response.status_code == 200:
                     raw = response.json()['choices'][0]['message']['content']
                     
-                    # 🛡️ FIX JSON: Regex inossidabile
-                    match = re.search(r'\{.*\}', raw, re.DOTALL)
-                    if not match:
-                        self.logger.error("❌ AI error: Nessun JSON trovato nella risposta.")
+                    # 🛡️ 10/10 GOD MODE PARSING: True Bracket Counter O(n)
+                    clean = None
+                    in_string = False
+                    escape_char = False
+                    bracket_count = 0
+                    start_idx = -1
+
+                    for i, char in enumerate(raw):
+                        if char == '"' and not escape_char:
+                            in_string = not in_string
+                        
+                        if not in_string:
+                            if char == '{':
+                                if bracket_count == 0:
+                                    start_idx = i
+                                bracket_count += 1
+                            elif char == '}':
+                                if bracket_count > 0:
+                                    bracket_count -= 1
+                                    if bracket_count == 0 and start_idx != -1:
+                                        clean = raw[start_idx:i+1]
+                                        break  # Primo JSON root isolato con successo
+                                        
+                        escape_char = (char == '\\' and not escape_char)
+                    
+                    if not clean:
+                        self.logger.error("❌ AI error: Nessun oggetto JSON valido estratto (Bracket Counter fallito).")
                         continue
                         
-                    clean = match.group(0)
                     try:
                         data = json.loads(clean)
                         self.logger.info(f"✅ AI OUTPUT: {data}")
