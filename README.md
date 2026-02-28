@@ -204,4 +204,236 @@ Ecco l'elenco completo di tutti i file attualmente caricati e disponibili nell'a
 * `anti_detect_tab.py`, `bookmaker_tab.py`, `desktop_app.py`, `god_certification_tab.py`, `history_tab.py`, `roserpina_tab.py`, `robots_tab.py`, `selectors_tab.py`
 
 **Directory `tests/tests/` (QA Automatica):**
-* `ui/MASTER_UI_TEST.py`, `system_integrity/REAL_ATTACK_TEST.py`, `system_integrity/SOAK_24H_TEST.py`, `system_integrity/ULTRA_SYSTEM_TEST.py`, `system_integrity/ENDURANCE_TEST.py`, `system_integrity/ANTI_DETECT_AUDIT.py`, `system_integrity/TELEGRAM_AI_PIPELINE_TEST.py`
+* `ui/MASTER_UI_TEST.py`, `system_integrity/REAL_ATTACK_TEST.py`, `system_integrity/SOAK_24H_TEST.py`, `system_integrity/ULTRA_SYSTEM_TEST.py`, `system_integrity/ENDURANCE_TEST.py`, `system_integrity/ANTI_DETECT_AUDIT.py`, `system_integrity/TELEGRAM_AI_PIPELINE_TEST.py` Perfetto.
+Ti restituisco il blocco unificato, pulito e senza duplicazioni, pronto per copia-incolla in README.md o documentazione tecnica.
+🎯 Motore di Esecuzione Hedge-Grade
+3️⃣ Allocazione Intelligente e Prevenzione Doppia Esposizione
+Il sistema impedisce doppie esposizioni tossiche attraverso un flusso deterministico e transazionale:
+🔎 Ricerca tavolo ottimale
+Seleziona il tavolo libero più idoneo.
+Priorità assoluta ai tavoli in modalità recovery (perdita pregressa da recuperare).
+Esclude tavoli già esposti sullo stesso evento.
+🧮 Calcolo Stake Matematico Lo stake viene calcolato combinando:
+Quota reale del bookmaker
+Esposizione residua disponibile
+Target di profitto configurato
+Moltiplicatore dinamico generato dall’IA
+Limiti di rischio (max exposure globale)
+🏦 Prenotazione Transazionale
+Prenotazione fondi su SQLite (Transaction Memory)
+Stato RESERVED
+Passaggio a PRE_COMMIT
+Lancio dell’ExecutionEngine
+4️⃣ Verifica Crittografica Post-Bet (Hedge-Grade)
+Il sistema non si fida ciecamente del bookmaker.
+Dopo il click di piazzamento:
+Legge saldo reale pre-bet.
+Legge saldo reale post-bet.
+Calcola:
+Copia codice
+
+Delta = saldo_pre - saldo_post
+✔ Se Delta == Stake
+Transizione PLACED
+Conferma definitiva su Database
+Emissione evento BET_SUCCESS
+❌ Se Delta != Stake
+Attivazione Rollback automatico
+Stato VOID
+Ripristino saldo in Transaction Memory
+Sistema messo in sicurezza
+Questo elimina:
+Bug visivi
+Click fantasma
+Quote modificate silenziosamente
+Desincronizzazioni bookmaker/UI
+🧪 Suite di Test Enterprise (QA & Chaos Engineering)
+Ogni push su GitHub attiva la CI/CD con rendering headless via Xvfb.
+✅ Test UI End-to-End (MASTER_UI_TEST.py)
+Simulazione utente reale (PyTest-Qt)
+Inserimento dati
+Click pulsanti
+Verifica caricamento chiavi e robot
+Test anti-freeze dell’interfaccia
+💥 Chaos Engineering (REAL_ATTACK_TEST.py)
+Iniezione guasti controllati:
+Crash rete
+Blocchi Cloudflare/Captcha
+Panic Event Bus
+Kill improvvisi durante transazioni
+Verifica:
+Nessuna corruzione DB
+Rollback sempre funzionante
+Invarianti finanziari intatti
+📡 Telegram & AI Pipeline (TELEGRAM_AI_PIPELINE_TEST.py)
+Test in 4 stadi:
+Iniezione chirurgica segnale
+Stress test 1000 msg/sec (anti-spam)
+Parsing AI complesso
+Simulazione collasso server Telegram + riconnessione automatica
+⏳ Soak Test 24H (SOAK_24H_TEST.py)
+Stress continuo sull’Execution Engine:
+Verifica assenza memory leak
+Controllo thread zombie
+Stabilità multi-ciclo
+Test endurance reale da server H24
+🛡️ Modulo Anti-Detect & Security Audit (GitHub Actions)
+Ogni commit esegue un audit automatico dell’impronta browser.
+🔍 Classici Anti-Bot
+SannySoft
+BrowserLeaks
+AmIUnique
+DeviceInfo
+Controlli:
+WebDriver flag rimosso
+WebGL spoofing attivo
+Navigator properties coerenti
+🌐 Rete & Coerenza IP
+BrowserScan
+IPHey
+Whoer
+Pixelscan
+Verifica:
+Allineamento fingerprint ↔ IP
+Coerenza WebRTC
+TLS fingerprint
+Se IP Datacenter → test fallisce (previsto). Se Proxy Residenziale → test supera euristiche.
+🧠 Hardcore Fingerprint
+FPScanner
+Detect.expert
+CreepJS
+Analisi:
+Firma GPU
+Tracce CDP
+Pattern matematici JS
+⚠ Nota: su GitHub (VM senza monitor reale) alcuni test falliscono volutamente.
+⚙️ Configurazione Proxy in GitHub (Secrets)
+Per superare i test di rete su GitHub:
+Repository → Settings
+Secrets and variables → Actions
+New repository secret
+Nome:
+Copia codice
+
+PROXY_URL
+Valore:
+Copia codice
+
+http://username:password@ip:porta
+Oppure:
+Copia codice
+
+http://ip:porta
+Dopo l’inserimento:
+Il workflow aggancia il proxy automaticamente
+I test IP diventano coerenti
+Nessun IP Azure rilevato
+📂 Struttura Repository
+Root
+Copia codice
+
+.gitignore
+AUDIT_REPORT.md
+GOD_CERTIFICATION.py
+README.md
+hedge_super_tester.py
+main.py
+pyproject.toml
+quant_ci_evaluator.py
+repo_audit.py
+requirements.txt
+setup_vps_task.py
+supervisor.py
+tester_v4.py
+.github/workflows/
+Copia codice
+
+build.yml
+openrouter_audit.yml
+production_check.yml
+v4_test_suite.yml
+v7_quant_monitoring.yml
+anti_detect_audit.yml
+master_ui_audit.yml
+config/
+Copia codice
+
+config.yaml
+robots.yaml
+selectors.yaml
+roserpina_settings.yaml
+core/
+Copia codice
+
+ai_parser.py
+ai_selector_validator.py
+ai_trainer.py
+anti_detect.py
+arch_v6.py
+auto_mapper_worker.py
+bet_worker.py
+command_parser.py
+config_loader.py
+config_paths.py
+controller.py
+crypto_vault.py
+database.py
+dom_executor_playwright.py
+dom_self_healing.py
+event_bus.py
+events.py
+execution_engine.py
+geometry.py
+health.py
+heartbeat.py
+human_behavior.py
+human_mouse.py
+human_profile.py
+invariants_guard.py
+lifecycle.py
+logger.py
+money_management.py
+multi_site_scanner.py
+os_human_interaction.py
+playwright_worker.py
+secure_storage.py
+security.py
+security_logger.py
+signal_parser.py
+state_machine.py
+telegram_worker.py
+utils.py
+ui/
+Copia codice
+
+anti_detect_tab.py
+bookmaker_tab.py
+desktop_app.py
+god_certification_tab.py
+history_tab.py
+roserpina_tab.py
+robots_tab.py
+selectors_tab.py
+tests/tests/
+ui/
+Copia codice
+
+MASTER_UI_TEST.py
+system_integrity/
+Copia codice
+
+REAL_ATTACK_TEST.py
+SOAK_24H_TEST.py
+ULTRA_SYSTEM_TEST.py
+ENDURANCE_TEST.py
+ANTI_DETECT_AUDIT.py
+TELEGRAM_AI_PIPELINE_TEST.py
+🏦 Stato Architetturale Finale
+Ledger protetto C-Level (CHECK + TRIGGER)
+Kill-Switch su IntegrityError
+No saldo negativo possibile
+No peak decrescente possibile
+No double exposure
+No double spend
+Crash-safe WAL FULL
+Multi-process adversarial safe
