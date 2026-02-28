@@ -32,53 +32,46 @@ jobs:
       
     - name: 🕵️‍♂️ Esecuzione Ultimate Anti-Detect Audit
       env:
-        # Passiamo il Token Webshare
-        WEBSHARE_TOKEN: ${{ secrets.WEBSHARE_TOKEN }}
+        # Passiamo il LINK DI DOWNLOAD TXT (non il token API)
+        WEBSHARE_DOWNLOAD_URL: ${{ secrets.WEBSHARE_DOWNLOAD_URL }}
       run: |
-        echo "🔄 Creazione script Python per estrazione proxy..."
+        echo "🔄 Estrazione proxy dal link di download TXT..."
         
-        # Scrive un file python al volo per evitare qualsiasi errore di sintassi Bash
-        cat << 'EOF' > get_proxy.py
+        cat << 'EOF' > get_proxy_txt.py
         import os, sys, requests
-        token = os.getenv('WEBSHARE_TOKEN')
+        url = os.getenv('WEBSHARE_DOWNLOAD_URL')
         
-        if not token:
-            print('❌ ERRORE: WEBSHARE_TOKEN è vuoto. Controlla i Secrets!', file=sys.stderr)
+        if not url:
+            print('❌ ERRORE: WEBSHARE_DOWNLOAD_URL è vuoto nei Secrets!', file=sys.stderr)
             sys.exit(0)
             
         try:
-            # FIX 1: Modalità "backbone" richiesta per i proxy residenziali
-            url = 'https://proxy.webshare.io/api/v2/proxy/list/?mode=backbone&page=1&page_size=100'
-            headers = {'Authorization': f'Token {token}'}
-            r = requests.get(url, headers=headers, timeout=15)
-            
+            r = requests.get(url, timeout=15)
             if r.status_code != 200:
-                print(f'❌ ERRORE API WEBSHARE (HTTP {r.status_code}): {r.text}', file=sys.stderr)
+                print(f'❌ ERRORE DOWNLOAD (HTTP {r.status_code})', file=sys.stderr)
                 sys.exit(0)
                 
-            proxies = r.json().get('results', [])
-            it_proxies = [x for x in proxies if x.get('country_code') == 'IT' and x.get('valid')]
-            
-            if not it_proxies:
-                print('❌ ERRORE: Nessun proxy IT valido trovato.', file=sys.stderr)
+            lines = [l.strip() for l in r.text.strip().split('\n') if l.strip()]
+            if not lines:
+                print('❌ ERRORE: Il file TXT scaricato è vuoto.', file=sys.stderr)
                 sys.exit(0)
                 
-            p = it_proxies[0]
-            # Stampa il risultato pulito
-            print(f"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}")
-            
+            # Il formato TXT di Webshare è IP:PORTA:USER:PASS
+            parts = lines[0].split(':')
+            if len(parts) >= 4:
+                print(f"http://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}")
+            else:
+                print(f"❌ ERRORE FORMATO RIGA: {lines[0]}", file=sys.stderr)
+                
         except Exception as e:
             print(f'❌ ERRORE DI RETE PYTHON: {str(e)}', file=sys.stderr)
         EOF
 
-        echo "🔄 Interrogazione API Webshare in corso..."
-        # FIX 2: Esegue il file appena creato e cattura il proxy
-        export PROXY_URL=$(python get_proxy.py)
+        export PROXY_URL=$(python get_proxy_txt.py)
 
-        if [ -z "$PROXY_URL" ]; then
+        if [ -z "$PROXY_URL" ] || [[ "$PROXY_URL" == *"None"* ]]; then
             echo "⚠️ Attenzione: Nessun proxy recuperato. Guarda l'errore ❌ qui sopra nei log."
         else
-            # Nasconde la password dai log
             MASKED_URL=$(echo "$PROXY_URL" | sed -e 's/\(http:\/\/[^:]*:\)[^@]*\(@.*\)/\1***\2/')
             echo "✅ Proxy Italiano estratto con successo: $MASKED_URL"
         fi
