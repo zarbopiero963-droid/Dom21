@@ -32,22 +32,23 @@ jobs:
       
     - name: 🕵️‍♂️ Esecuzione Ultimate Anti-Detect Audit
       env:
-        # Passiamo il Token Webshare (Assicurati che la secret esista e sia corretta!)
+        # Passiamo il Token Webshare
         WEBSHARE_TOKEN: ${{ secrets.WEBSHARE_TOKEN }}
       run: |
-        echo "🔄 Interrogazione API Webshare in corso..."
+        echo "🔄 Creazione script Python per estrazione proxy..."
         
-        export PROXY_URL=$(python -c "
+        # Scrive un file python al volo per evitare qualsiasi errore di sintassi Bash
+        cat << 'EOF' > get_proxy.py
         import os, sys, requests
         token = os.getenv('WEBSHARE_TOKEN')
         
         if not token:
-            print('❌ ERRORE: WEBSHARE_TOKEN è vuoto. Controlla i Secrets su GitHub!', file=sys.stderr)
+            print('❌ ERRORE: WEBSHARE_TOKEN è vuoto. Controlla i Secrets!', file=sys.stderr)
             sys.exit(0)
             
         try:
-            # FIX: Aggiunto &mode=direct come richiesto dalle API V2 di Webshare
-            url = 'https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&page_size=100'
+            # FIX 1: Modalità "backbone" richiesta per i proxy residenziali
+            url = 'https://proxy.webshare.io/api/v2/proxy/list/?mode=backbone&page=1&page_size=100'
             headers = {'Authorization': f'Token {token}'}
             r = requests.get(url, headers=headers, timeout=15)
             
@@ -59,22 +60,27 @@ jobs:
             it_proxies = [x for x in proxies if x.get('country_code') == 'IT' and x.get('valid')]
             
             if not it_proxies:
-                print('❌ ERRORE: Webshare ha risposto OK, ma non ci sono proxy IT validi.', file=sys.stderr)
+                print('❌ ERRORE: Nessun proxy IT valido trovato.', file=sys.stderr)
                 sys.exit(0)
                 
             p = it_proxies[0]
-            # Output finale per esportare la variabile PROXY_URL
-            print(f\"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}\")
+            # Stampa il risultato pulito
+            print(f"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}")
             
         except Exception as e:
             print(f'❌ ERRORE DI RETE PYTHON: {str(e)}', file=sys.stderr)
-        ")
+        EOF
+
+        echo "🔄 Interrogazione API Webshare in corso..."
+        # FIX 2: Esegue il file appena creato e cattura il proxy
+        export PROXY_URL=$(python get_proxy.py)
 
         if [ -z "$PROXY_URL" ]; then
             echo "⚠️ Attenzione: Nessun proxy recuperato. Guarda l'errore ❌ qui sopra nei log."
         else
-            MASKED_URL=\$(echo "\$PROXY_URL" | sed -e 's/\(http:\/\/[^:]*:\)[^@]*\(@.*\)/\1***\2/')
-            echo "✅ Proxy Italiano estratto con successo: \$MASKED_URL"
+            # Nasconde la password dai log
+            MASKED_URL=$(echo "$PROXY_URL" | sed -e 's/\(http:\/\/[^:]*:\)[^@]*\(@.*\)/\1***\2/')
+            echo "✅ Proxy Italiano estratto con successo: $MASKED_URL"
         fi
 
         echo "🚀 Avvio dell'Audit Anti-Detect..."
