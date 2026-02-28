@@ -1,6 +1,9 @@
 import threading
 import queue
 import time
+import concurrent.futures
+import os
+import signal
 
 # Constants
 JOIN_TIMEOUT = 2
@@ -10,13 +13,13 @@ WATCHDOG_INTERVAL = 20
 
 # --- 1. CENTRAL EVENT BUS ---
 class EventBusV6:
-    """Pub/Sub with single dispatcher thread (avoids thread-per-event explosion)."""
+    """Pub/Sub with single dispatcher thread and backpressure to prevent RAM explosion."""
 
     def __init__(self, logger):
         self.logger = logger
         self.listeners = {}
         self.lock = threading.Lock()
-        self._queue = queue.Queue()
+        self._queue = queue.Queue(maxsize=5000)
         self._running = True
         self._dispatcher = threading.Thread(
             target=self._dispatch_loop, daemon=True, name="EventBus_Dispatcher"
@@ -30,70 +33,123 @@ class EventBusV6:
             self.listeners[event].append(fn)
 
     def emit(self, event, data=None):
-        """Enqueues the event; the dispatcher delivers it to listeners."""
-        self._queue.put((event, data))
+        try:
+            self._queue.put_nowait((event, data))
+        except queue.Full:
+            self.logger.critical(f"⚠️ EventBus SATURATO (>5000 in coda). Dropping event: {event}")
 
     def _dispatch_loop(self):
-        """Single thread that processes all events in order."""
         while self._running:
             try:
                 event, data = self._queue.get(timeout=1)
             except queue.Empty:
                 continue
+                
             with self.lock:
                 listeners = list(self.listeners.get(event, []))
+                
             for fn in listeners:
                 try:
                     fn(data)
                 except Exception as e:
                     self.logger.error(f"EventBus Error ({event}): {e}")
+                    
             self._queue.task_done()
 
     def stop(self):
         self._running = False
-        # Drain remaining events
+        # 🛡️ FIX GRACEFUL SHUTDOWN: Drena e chiude senza tagliare processi in corso
         while not self._queue.empty():
             try:
-                event, data = self._queue.get_nowait()
-                self.logger.debug(f"Draining event on stop: {event}")
+                self._queue.get_nowait()
                 self._queue.task_done()
             except queue.Empty:
                 break
         try:
             self._dispatcher.join(timeout=JOIN_TIMEOUT)
-        except Exception as e:
-            self.logger.warning(f"Error stopping EventBusV6 dispatcher: {e}")
+        except Exception:
+            pass
 
 
-# --- 2. PLAYWRIGHT WORKER (Anti-Freeze) ---
+# --- 2. PLAYWRIGHT WORKER (Anti-Freeze & IPC Timeout Protection) ---
 class PlaywrightWorker:
     def __init__(self, executor, logger):
         self.executor = executor
         self.logger = logger
         self.queue = queue.Queue()
         self.running = True
+        self.thread = None
+        self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.start()
+
+    def start(self):
+        if self._pool is None:
+            self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.thread = threading.Thread(target=self._loop, daemon=True, name="PW_Worker")
         self.thread.start()
 
     def submit(self, fn, *args, **kwargs):
-        """Adds a task to the Playwright queue."""
-        self.queue.put((fn, args, kwargs))
+        if self.running:
+            self.queue.put((fn, args, kwargs))
+
+    def _restart_pool(self):
+        self.logger.warning("♻️ Ricreazione ThreadPoolExecutor causa Timeout IPC...")
+        if self._pool:
+            self._pool.shutdown(wait=False)
+        self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        
+        active_threads = threading.active_count()
+        if active_threads > 20:
+            self.logger.critical("💀 FATAL LEAK: Troppi thread zombie. OS Watchdog Trigger!")
+            os.kill(os.getpid(), signal.SIGTERM)
 
     def _loop(self):
         self.logger.info("Playwright Worker started.")
         while self.running:
             try:
-                fn, args, kwargs = self.queue.get(timeout=1)
-                fn(*args, **kwargs)
-                self.queue.task_done()
-                self.logger.debug(f"Worker task completed: {fn.__name__}")
+                task = self.queue.get(timeout=1.0)
+                fn, args, kwargs = task
+                
+                # Sentinel per il Graceful Shutdown
+                if fn is None:
+                    self.queue.task_done()
+                    break
+                
+                try:
+                    # 🛡️ GOD MODE: Esecuzione segregata con timeout assoluto contro il freeze IPC
+                    future = self._pool.submit(fn, *args, **kwargs)
+                    future.result(timeout=90.0)
+                except concurrent.futures.TimeoutError:
+                    self.logger.critical("💀 WORKER TIMEOUT: Playwright bloccato o in freeze. Abortisco task.")
+                    self._restart_pool()
+                except Exception as e:
+                    self.logger.error(f"Worker Task Error: {e}")
+                finally:
+                    # Garantisce il decremento del task counter per la barriera di drain
+                    self.queue.task_done()
+                    
             except queue.Empty:
                 continue
-            except Exception as e:
-                self.logger.error(f"Worker Error: {e}")
 
     def stop(self):
         self.running = False
+        
+        # 1. Inietta Sentinel per sbloccare la coda istantaneamente
+        self.queue.put((None, None, None))
+        
+        # 2. Barriera di Drain: attende che tutti i task precedenti e la sentinel siano processati
+        self.logger.info("⏳ PlaywrightWorker: Drenaggio coda in corso...")
+        self.queue.join()
+        
+        # 3. Thread Join: chiusura elegante del ciclo
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=JOIN_TIMEOUT)
+            
+        # 4. Pool Shutdown transazionale
+        if self._pool:
+            self._pool.shutdown(wait=True)
+            
+        self.logger.info("🛑 PlaywrightWorker: Shutdown completato.")
 
 
 # --- 3. SESSION GUARDIAN (Auto-Recovery) ---
@@ -132,7 +188,6 @@ class SessionGuardian:
                 self.logger.error(f"Guardian Error: {e}")
 
     def _do_recovery(self):
-        """Delegates the recovery process to the executor."""
         self.logger.warning("Automatic recovery in progress...")
         try:
             if hasattr(self.executor, "recover_session"):
@@ -143,9 +198,7 @@ class SessionGuardian:
             ):
                 success = self.executor.recycle_browser()
             else:
-                self.logger.error(
-                    "Automatic recovery not possible with current executor configuration."
-                )
+                self.logger.error("Automatic recovery not possible with current config.")
                 return
 
             if success:
@@ -172,16 +225,16 @@ class PlaywrightWatchdog:
 
     def _loop(self):
         while not self.stop_event.wait(WATCHDOG_INTERVAL):
-            if self.worker.running and not self.worker.thread.is_alive():
+            # 🛡️ FIX WATCHDOG: Guard su NoneType thread
+            if self.worker.running and self.worker.thread and not self.worker.thread.is_alive():
                 self.logger.critical("ALERT: Playwright Worker thread is dead! Restarting...")
                 self._restart_worker()
 
     def _restart_worker(self):
-        """Attempts to restart the Worker thread (thread-safe)."""
         with self._restart_lock:
             try:
-                if self.worker.thread.is_alive():
-                    return  # Already restarted by another check
+                if self.worker.thread and self.worker.thread.is_alive():
+                    return
                 self.worker.thread = threading.Thread(
                     target=self.worker._loop, daemon=True, name="PW_Worker"
                 )
