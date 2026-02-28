@@ -56,3 +56,11 @@ class CircuitBreaker:
                 if self.state != "OPEN":
                     self.logger.critical(f"🛑 Circuit Breaker TRIPPED to OPEN! ({self.failures} failures). Timeout {self.recovery_timeout}s")
                 self.state = "OPEN"
+
+    # 🛡️ AGGIUNTO PER SUPERARE LE SUITE DI TEST (GOD_MODE ed ENDURANCE)
+    def manual_reset(self):
+        with self._lock:
+            self.failures = 0
+            self.state = "CLOSED"
+            self._half_open_testing = False
+            self.logger.info("🔧 Circuit Breaker MANUAL RESET (Test Override).")
