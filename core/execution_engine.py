@@ -14,12 +14,10 @@ class ExecutionEngine:
         self.breaker = CircuitBreaker(logger=self.logger)
         self.betting_enabled = False
         
-        # 🛡️ BARRIER DI DRAIN COMPLETO
         self._shutdown_event = threading.Event()
         self._active_tx_lock = threading.Lock()
         self._active_tx = 0
         
-        # 🛡️ LOCK SICURO PER RACE CONDITIONS
         self._processing_lock = threading.Lock()
         
         self._processing_matches = set()
@@ -63,7 +61,6 @@ class ExecutionEngine:
                 return
 
             try:
-                # 🛡️ FIX: Utilizzo Lock atomico invece del Semaphore prono a memory/state leaks
                 with self._processing_lock:
                     self.current_bet_start = time.time()
                     
@@ -75,20 +72,16 @@ class ExecutionEngine:
                             if not is_logged:
                                 raise Exception("SESSION INVALID - Login check fallito pre-bet")
 
-                    # 1. RESERVE
                     tx_id = str(uuid.uuid4())
                     money_manager.db.reserve(tx_id, stake, teams=teams)
                     tx_reserved = True
 
-                    # 2. PRE_COMMIT
                     money_manager.db.mark_pre_commit(tx_id)
                     tx_pre_committed = True
 
-                    # 3. CLICK
                     bet_ok = self.executor.place_bet(teams, "1", stake)
                     if not bet_ok: raise RuntimeError("Click fallito")
 
-                    # 4. PLACED
                     tx_placed = True
                     money_manager.db.mark_placed(tx_id)
                     self.breaker.record_success()
@@ -99,6 +92,10 @@ class ExecutionEngine:
             except Exception as e:
                 final_exc = e
                 actual_side_effect = False
+                
+                if not tx_id:
+                    tx_id = f"FAILED_{int(time.time())}"
+                
                 if hasattr(self.executor, "_chaos_hooks"):
                     if self.executor._chaos_hooks.get("crash_post_click"):
                         actual_side_effect = True
@@ -106,7 +103,6 @@ class ExecutionEngine:
                 if tx_reserved and not tx_pre_committed:
                     money_manager.db.rollback(tx_id)
                 elif tx_pre_committed and not tx_placed and not actual_side_effect:
-                    # 🛡️ FIX: Metodo sicuro per non bypassare il Lock SQLite
                     money_manager.db.mark_manual_check(tx_id)
                     final_exc = Exception("PRE_COMMIT UNCERTAINTY")
                 elif actual_side_effect or tx_placed:
