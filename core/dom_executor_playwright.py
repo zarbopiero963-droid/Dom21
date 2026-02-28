@@ -8,6 +8,11 @@ class DomExecutorPlaywright:
         self.allow_place = allow_place
         self.playwright = self.browser = self.context = self.page = None
         self._browser_lock = threading.Lock()
+        
+        # --------------------------------------------------
+        # 🛡️ CHAOS COMPATIBILITY LAYER (Test Suite Required)
+        # --------------------------------------------------
+        self._chaos_hooks = {}
 
     def launch_browser(self):
         with self._browser_lock:
@@ -32,6 +37,9 @@ class DomExecutorPlaywright:
             finally: self.context = self.browser = self.playwright = None
 
     def place_bet(self, teams, market, stake): 
+        # In caso i test iniettino un hook per place_bet
+        if "place_bet" in self._chaos_hooks:
+            return self._chaos_hooks["place_bet"](teams, market, stake)
         return True
 
     def check_health(self):
@@ -42,7 +50,7 @@ class DomExecutorPlaywright:
                 except: return False
         return True
 
-    # 🛡️ FIX 3: Backward Compatibility per REAL_ATTACK_TEST (Mock/Scraping Interface)
+    # 🛡️ FIX 3: Backward Compatibility per REAL_ATTACK_TEST e GOD_MODE
     def get_balance(self):
         """
         Metodo richiesto dai REAL_ATTACK_TEST.
@@ -51,6 +59,9 @@ class DomExecutorPlaywright:
         In test: fallback sicuro e controllato.
         """
         try:
+            if "get_balance" in self._chaos_hooks:
+                return self._chaos_hooks["get_balance"]()
+
             if hasattr(self, "_get_balance_internal"):
                 return self._get_balance_internal()
             
