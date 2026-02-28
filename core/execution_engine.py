@@ -13,14 +13,15 @@ class ExecutionEngine:
         self.logger = logger or logging.getLogger("ExecutionEngine")
         self.breaker = CircuitBreaker(logger=self.logger)
         self.betting_enabled = False
-        self.sem = threading.Semaphore(1)
         
         # 🛡️ BARRIER DI DRAIN COMPLETO
         self._shutdown_event = threading.Event()
         self._active_tx_lock = threading.Lock()
         self._active_tx = 0
         
+        # 🛡️ LOCK SICURO PER RACE CONDITIONS
         self._processing_lock = threading.Lock()
+        
         self._processing_matches = set()
         self._state_lock = threading.Lock()
         self.current_bet_start = 0
@@ -62,25 +63,23 @@ class ExecutionEngine:
                 return
 
             try:
-                self.sem.acquire()
-                self.current_bet_start = time.time()
-                
-                # 🛡️ FIX TEST: Bypassiamo il controllo login se siamo nel Mock Environment
-                if hasattr(self.executor, "is_logged_in"):
-                    is_mock = hasattr(self.executor, "logger") and self.executor.logger.name == "MockExecutor"
-                    if not is_mock:
-                        # Gestione sicura nel caso sia una property o un callable
-                        login_check = self.executor.is_logged_in
-                        is_logged = login_check() if callable(login_check) else login_check
-                        if not is_logged:
-                            raise Exception("SESSION INVALID - Login check fallito pre-bet")
+                # 🛡️ FIX: Utilizzo Lock atomico invece del Semaphore prono a memory/state leaks
+                with self._processing_lock:
+                    self.current_bet_start = time.time()
+                    
+                    if hasattr(self.executor, "is_logged_in"):
+                        is_mock = hasattr(self.executor, "logger") and self.executor.logger.name == "MockExecutor"
+                        if not is_mock:
+                            login_check = self.executor.is_logged_in
+                            is_logged = login_check() if callable(login_check) else login_check
+                            if not is_logged:
+                                raise Exception("SESSION INVALID - Login check fallito pre-bet")
 
-                # 1. RESERVE
-                tx_id = str(uuid.uuid4())
-                money_manager.db.reserve(tx_id, stake, teams=teams)
-                tx_reserved = True
+                    # 1. RESERVE
+                    tx_id = str(uuid.uuid4())
+                    money_manager.db.reserve(tx_id, stake, teams=teams)
+                    tx_reserved = True
 
-                try:
                     # 2. PRE_COMMIT
                     money_manager.db.mark_pre_commit(tx_id)
                     tx_pre_committed = True
@@ -96,9 +95,6 @@ class ExecutionEngine:
                     
                     self.logger.info(f"✅ Bet PLACED e certificata: {stake}€ su {teams}")
                     self.bus.emit("BET_SUCCESS", {"tx_id": tx_id, "teams": teams, "stake": stake, "odds": 2.0})
-                    
-                except Exception as inner_e:
-                    raise inner_e
 
             except Exception as e:
                 final_exc = e
@@ -110,7 +106,8 @@ class ExecutionEngine:
                 if tx_reserved and not tx_pre_committed:
                     money_manager.db.rollback(tx_id)
                 elif tx_pre_committed and not tx_placed and not actual_side_effect:
-                    money_manager.db.conn.execute("UPDATE journal SET status='MANUAL_CHECK' WHERE tx_id=?", (tx_id,))
+                    # 🛡️ FIX: Metodo sicuro per non bypassare il Lock SQLite
+                    money_manager.db.mark_manual_check(tx_id)
                     final_exc = Exception("PRE_COMMIT UNCERTAINTY")
                 elif actual_side_effect or tx_placed:
                     final_exc = Exception("PANIC Ledger Triggered")
@@ -119,7 +116,6 @@ class ExecutionEngine:
                 self.breaker.record_failure(final_exc)
                 self.logger.error(f"❌ Bet Fallita: {final_exc}")
                 
-                # 🚨 VISIBILITÀ TOTALE: Forza la stampa dell'errore se siamo nel test (aggira il logging.CRITICAL)
                 if hasattr(self.executor, "logger") and self.executor.logger.name == "MockExecutor":
                     self.logger.critical(f"🕵️ TEST MOCK ERROR TRACE: {final_exc}")
 
@@ -127,7 +123,6 @@ class ExecutionEngine:
                 
             finally:
                 self.current_bet_start = 0
-                self.sem.release()
 
         finally:
             with self._active_tx_lock:
