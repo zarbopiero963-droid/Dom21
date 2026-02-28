@@ -37,3 +37,17 @@ class MoneyManager:
         with self._lock:
             try: self.db.resolve_panics()
             except Exception as e: self.logger.error(f"Errore recon: {e}")
+
+    # 🛡️ FIX 1: Backward Compatibility per ULTRA_SYSTEM_TEST e Execution Engine
+    def refund(self, tx_id: str):
+        """
+        Compatibilità legacy ULTRA TEST.
+        Esegue rollback sicuro di una transazione RESERVED.
+        """
+        with self._lock:
+            try:
+                self.db.rollback(tx_id)
+                self.logger.info(f"Refund eseguito per TX {tx_id}")
+            except Exception as e:
+                self.logger.error(f"Refund fallito per TX {tx_id}: {e}")
+                raise
