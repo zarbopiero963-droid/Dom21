@@ -1,66 +1,65 @@
-import logging
-import traceback
-import time
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import queue
+import time
 
-class EventBus:
-    def __init__(self):
-        self.subscribers = {}
-        self.logger = logging.getLogger("EventBus")
+class EventBusV6:
+    def __init__(self, logger):
+        self.logger = logger
+        self.listeners = {}
+        self.lock = threading.Lock()
+        self._queue = queue.Queue(maxsize=5000)
+        self._running = True
+        self._dispatcher = threading.Thread(
+            target=self._dispatch_loop, daemon=True, name="EventBus_Dispatcher"
+        )
+        self._dispatcher.start()
 
-        # 🔴 Pool Isolati per prevenire starvation (Hedge-Grade)
-        self.bet_pool = ThreadPoolExecutor(max_workers=5)
-        self.ui_pool = ThreadPoolExecutor(max_workers=2)
-        self.log_pool = ThreadPoolExecutor(max_workers=1)
+    @property
+    def pending_count(self):
+        return self._queue.qsize()
 
-        self.max_queue_size = 50
-        self.ttl_seconds = 15.0
-        self._pending = 0
-        self._lock = threading.Lock()
+    def subscribe(self, event, fn):
+        with self.lock:
+            if event not in self.listeners:
+                self.listeners[event] = []
+            self.listeners[event].append(fn)
 
-    def subscribe(self, event_type, callback):
-        if event_type not in self.subscribers: self.subscribers[event_type] = []
-        self.subscribers[event_type].append(callback)
-
-    def emit(self, event_type, payload):
-        now = time.monotonic()
-        with self._lock:
-            if self._pending >= self.max_queue_size: return
-        if event_type not in self.subscribers: return
-
-        # Instradamento metrico
-        pool = self.ui_pool if event_type.startswith("UI_") else (self.log_pool if event_type.startswith("LOG_") else self.bet_pool)
-
-        for callback in self.subscribers[event_type]:
-            if time.monotonic() - now > self.ttl_seconds: continue
-            
-            # 🔴 FIX CHAOS TEST: Esecuzione sincrona solo per il simulatore,
-            # in modo che gli assert del GOD_MODE_chaos non falliscano per asincronia.
-            if event_type == "TEST_EVT":
-                try:
-                    callback(payload)
-                except Exception as e:
-                    self.logger.debug(f"Assorbito crash test: {e}")
-                continue
-
-            with self._lock: self._pending += 1
-            pool.submit(self._safe_execute, callback, payload, event_type, now)
-
-    def _safe_execute(self, callback, payload, event_type, emit_time):
+    def emit(self, event, data=None):
         try:
-            if time.monotonic() - emit_time > self.ttl_seconds: return
-            callback(payload)
-        except Exception as e: self.logger.error(f"❌ Crash {event_type}: {e}")
-        finally:
-            with self._lock:
-                if self._pending > 0: self._pending -= 1
+            self._queue.put_nowait((event, data))
+        except queue.Full:
+            self.logger.critical(f"⚠️ EventBus SATURATO (>5000 in coda). Dropping event: {event}")
 
-    def start(self): pass
-    
+    def _dispatch_loop(self):
+        while self._running:
+            try:
+                event, data = self._queue.get(timeout=1)
+            except queue.Empty:
+                continue
+                
+            with self.lock:
+                listeners = list(self.listeners.get(event, []))
+                
+            for fn in listeners:
+                try:
+                    fn(data)
+                except Exception as e:
+                    self.logger.error(f"EventBus Error ({event}): {e}")
+            
+            self._queue.task_done()
+
     def stop(self):
-        for p in [self.bet_pool, self.ui_pool, self.log_pool]:
-            try: p.shutdown(wait=False, cancel_futures=True)
-            except TypeError: p.shutdown(wait=False)
+        self._running = False
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except queue.Empty:
+                break
+        try:
+            self._dispatcher.join(timeout=2)
+        except Exception:
+            pass
 
-bus = EventBus()
+import logging
+bus = EventBusV6(logging.getLogger("DummyBus"))
