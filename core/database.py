@@ -55,7 +55,8 @@ class Database:
                     )
                     self.conn.execute("COMMIT")
                 except:
-                    self.conn.execute("ROLLBACK")
+                    try: self.conn.execute("ROLLBACK")
+                    except: pass
                     raise
 
     def reserve(self, tx_id, amount, table_id=1, teams="", match_hash=""):
@@ -70,7 +71,6 @@ class Database:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
-                    # 🛡️ FIX ZOMBIE_TX: Protezione saldo negativo
                     row = self.conn.execute("SELECT current_balance FROM balance WHERE id = 1").fetchone()
                     if not row or float(row["current_balance"]) < float(amt):
                         raise ValueError(f"Fondi insufficienti. Richiesti {amt}, disponibili {row['current_balance'] if row else 'N/A'}")
@@ -82,7 +82,8 @@ class Database:
                     self.conn.execute("UPDATE balance SET current_balance = current_balance - ? WHERE id = 1", (amt,))
                     self.conn.execute("COMMIT")
                 except:
-                    self.conn.execute("ROLLBACK")
+                    try: self.conn.execute("ROLLBACK")
+                    except: pass
                     raise
 
     def mark_pre_commit(self, tx_id):
@@ -93,7 +94,8 @@ class Database:
                     self.conn.execute("UPDATE journal SET status='PRE_COMMIT' WHERE tx_id=?", (tx_id,))
                     self.conn.execute("COMMIT")
                 except:
-                    self.conn.execute("ROLLBACK")
+                    try: self.conn.execute("ROLLBACK")
+                    except: pass
                     raise
 
     def mark_placed(self, tx_id):
@@ -104,7 +106,8 @@ class Database:
                     self.conn.execute("UPDATE journal SET status='PLACED' WHERE tx_id=?", (tx_id,))
                     self.conn.execute("COMMIT")
                 except:
-                    self.conn.execute("ROLLBACK")
+                    try: self.conn.execute("ROLLBACK")
+                    except: pass
                     raise
 
     def pending(self):
@@ -126,7 +129,8 @@ class Database:
                         self.conn.execute("UPDATE balance SET current_balance = current_balance + ? WHERE id = 1", (float(row["amount"]),))
                     self.conn.execute("COMMIT")
                 except:
-                    self.conn.execute("ROLLBACK")
+                    try: self.conn.execute("ROLLBACK")
+                    except: pass
                     raise
 
     def recover_reserved(self):
@@ -143,7 +147,8 @@ class Database:
                     self.conn.execute("UPDATE journal SET status='MANUAL_CHECK' WHERE status='PRE_COMMIT'")
                     self.conn.execute("COMMIT")
                 except:
-                    self.conn.execute("ROLLBACK")
+                    try: self.conn.execute("ROLLBACK")
+                    except: pass
                     raise
 
     def write_panic_file(self, tx_id):
@@ -163,55 +168,49 @@ class Database:
                         self.conn.execute("UPDATE journal SET status='PLACED' WHERE tx_id=?", (tx_id,))
                         self.conn.execute("COMMIT")
                         os.remove(p_file)
-                    except: self.conn.execute("ROLLBACK")
+                    except: 
+                        try: self.conn.execute("ROLLBACK")
+                        except: pass
 
-    # 🛡️ Metodo Sicuro per l'Engine
     def mark_manual_check(self, tx_id):
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
-                    self.conn.execute(
-                        "UPDATE journal SET status='MANUAL_CHECK' WHERE tx_id=?",
-                        (tx_id,)
-                    )
+                    self.conn.execute("UPDATE journal SET status='MANUAL_CHECK' WHERE tx_id=?", (tx_id,))
                     self.conn.execute("COMMIT")
                 except:
-                    self.conn.execute("ROLLBACK")
+                    try: self.conn.execute("ROLLBACK")
+                    except: pass
                     raise
 
-    # 🛡️ Metodo Sicuro per il Money Manager
     def commit(self, tx_id, payout):
+        try:
+            payout = float(payout)
+            if math.isnan(payout) or math.isinf(payout) or payout < 0:
+                raise ValueError("Payout non può essere negativo o malformato.")
+        except Exception as e:
+            raise ValueError(f"Payout validation error: {e}")
+
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
-                    row = self.conn.execute(
-                        "SELECT amount FROM journal WHERE tx_id=?",
-                        (tx_id,)
-                    ).fetchone()
-
+                    row = self.conn.execute("SELECT amount, status FROM journal WHERE tx_id=?", (tx_id,)).fetchone()
                     if not row:
                         raise ValueError("Transazione non trovata")
+                    
+                    if row["status"] != "PLACED":
+                        raise ValueError(f"Impossibile fare commit. La transazione {tx_id} è in stato: {row['status']}")
 
                     stake = float(row["amount"])
-                    profit = float(payout) - stake
+                    profit = payout - stake
 
-                    self.conn.execute(
-                        "UPDATE journal SET status='SETTLED', payout=? WHERE tx_id=?",
-                        (payout, tx_id)
-                    )
-
-                    self.conn.execute(
-                        "UPDATE balance SET current_balance = current_balance + ? WHERE id = 1",
-                        (profit + stake,)
-                    )
-
-                    self.conn.execute(
-                        "UPDATE balance SET peak_balance = MAX(peak_balance, current_balance) WHERE id = 1"
-                    )
-
+                    self.conn.execute("UPDATE journal SET status='SETTLED', payout=? WHERE tx_id=?", (payout, tx_id))
+                    self.conn.execute("UPDATE balance SET current_balance = current_balance + ? WHERE id = 1", (profit + stake,))
+                    self.conn.execute("UPDATE balance SET peak_balance = MAX(peak_balance, current_balance) WHERE id = 1")
                     self.conn.execute("COMMIT")
                 except:
-                    self.conn.execute("ROLLBACK")
+                    try: self.conn.execute("ROLLBACK")
+                    except: pass
                     raise
