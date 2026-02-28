@@ -1,49 +1,40 @@
-import time
 import os
+import time
 import logging
-from core.utils import get_project_root
+import platform
+import threading
 
 try:
     import pyautogui
+    pyautogui.FAILSAFE = True
     PYAUTOGUI_AVAILABLE = True
-except ImportError:
-    PYAUTOGUI_AVAILABLE = False
+except ImportError: PYAUTOGUI_AVAILABLE = False
 
-class HumanInteraction:
+class OSHumanInteraction:
     def __init__(self, logger=None):
-        self.logger = logger or logging.getLogger("SuperAgent")
-        if PYAUTOGUI_AVAILABLE:
-            pyautogui.FAILSAFE = True
+        self.logger = logger or logging.getLogger("OS_Human")
+        self._lock = threading.Lock()
 
-    def open_chrome_from_desktop(self):
-        if not PYAUTOGUI_AVAILABLE:
-            self.logger.warning("PyAutoGUI non installato. Impossibile interagire col desktop.")
-            return False
+    def minimize_all(self):
+        if not PYAUTOGUI_AVAILABLE: return
+        with self._lock:
+            try:
+                sys_os = platform.system()
+                if sys_os == "Windows": pyautogui.hotkey('win', 'd')
+                elif sys_os == "Darwin": pyautogui.hotkey('command', 'f3') 
+                time.sleep(1)
+            except: pass
 
-        self.logger.info("🖱️ HUMAN: Cerco icona Chrome sul desktop...")
-
-        pyautogui.hotkey('win', 'd')
-        time.sleep(1)
-
-        try:
-            icon_path = os.path.join(get_project_root(), "data", "chrome_icon.png")
-
-            if os.path.exists(icon_path):
-                location = pyautogui.locateOnScreen(icon_path, confidence=0.8)
-                if location:
-                    pyautogui.doubleClick(location)
-                    self.logger.info("🖱️ Click su Chrome effettuato.")
-                    time.sleep(3)
+    def click_icon_by_image(self, image_path: str):
+        if not PYAUTOGUI_AVAILABLE or not os.path.exists(image_path): return False
+        with self._lock:
+            try:
+                try: pos = pyautogui.locateCenterOnScreen(image_path, confidence=0.8)
+                except (TypeError, Exception): pos = pyautogui.locateCenterOnScreen(image_path)
+                if pos:
+                    pyautogui.moveTo(pos.x, pos.y, 0.5, pyautogui.easeOutQuad)
+                    time.sleep(0.2)
+                    pyautogui.click()
                     return True
-
-            self.logger.warning("⚠️ Icona Chrome non trovata a video.")
-            return False
-
-        except Exception as e:
-            self.logger.error("Errore PyAutoGUI: %s", e)
-            return False
-
-    def wake_up_screen(self):
-        if PYAUTOGUI_AVAILABLE:
-            pyautogui.moveRel(1, 0)
-            pyautogui.moveRel(-1, 0)
+                return False
+            except: return False
