@@ -17,61 +17,31 @@ class ExecutionEngine:
         self._shutdown_event = threading.Event()
         self._active_tx_lock = threading.Lock()
         self._active_tx = 0
-        
         self._processing_lock = threading.Lock()
         
-        self._processing_matches = set()
-        self._state_lock = threading.Lock()
-        self.current_bet_start = 0
-        self.force_abort = False
-
     def _safe_float(self, val: Any, default: float = 2.0) -> float:
-        if val is None: return default
-        if isinstance(val, (int, float)): return float(val)
         try:
             clean_str = re.sub(r'[^\d.,-]', '', str(val))
             if not clean_str: return default
-            if ',' in clean_str and '.' in clean_str:
-                clean_str = clean_str.replace('.', '').replace(',', '.')
-            elif ',' in clean_str:
-                clean_str = clean_str.replace(',', '.')
+            if ',' in clean_str and '.' in clean_str: clean_str = clean_str.replace('.', '').replace(',', '.')
+            elif ',' in clean_str: clean_str = clean_str.replace(',', '.')
             return float(clean_str)
-        except Exception:
-            return default
+        except: return default
 
     def process_signal(self, payload: Dict[str, Any], money_manager) -> None:
-        with self._active_tx_lock:
-            self._active_tx += 1
-
+        with self._active_tx_lock: self._active_tx += 1
         try:
-            if not getattr(self, "betting_enabled", False): 
-                return
-            if not self.breaker.allow_request(): 
-                return
+            if not getattr(self, "betting_enabled", False) or not self.breaker.allow_request(): return
 
             tx_id = None
-            tx_reserved = False
-            tx_pre_committed = False
-            tx_placed = False
+            tx_reserved = tx_pre_committed = tx_placed = False
             teams = payload.get("teams", "Unknown")
-            stake = self._safe_float(payload.get("stake"), default=2.0)
+            stake = self._safe_float(payload.get("stake"), 2.0)
 
-            if stake <= 0:
-                self.logger.error(f"❌ Stake non valido ({stake}). Transazione abortita.")
-                return
+            if stake <= 0: return
 
             try:
                 with self._processing_lock:
-                    self.current_bet_start = time.time()
-                    
-                    if hasattr(self.executor, "is_logged_in"):
-                        is_mock = hasattr(self.executor, "logger") and self.executor.logger.name == "MockExecutor"
-                        if not is_mock:
-                            login_check = self.executor.is_logged_in
-                            is_logged = login_check() if callable(login_check) else login_check
-                            if not is_logged:
-                                raise Exception("SESSION INVALID - Login check fallito pre-bet")
-
                     tx_id = str(uuid.uuid4())
                     money_manager.db.reserve(tx_id, stake, teams=teams)
                     tx_reserved = True
@@ -85,20 +55,15 @@ class ExecutionEngine:
                     tx_placed = True
                     money_manager.db.mark_placed(tx_id)
                     self.breaker.record_success()
-                    
-                    self.logger.info(f"✅ Bet PLACED e certificata: {stake}€ su {teams}")
-                    self.bus.emit("BET_SUCCESS", {"tx_id": tx_id, "teams": teams, "stake": stake, "odds": 2.0})
+                    self.bus.emit("BET_SUCCESS", {"tx_id": tx_id, "teams": teams, "stake": stake})
 
             except Exception as e:
                 final_exc = e
                 actual_side_effect = False
+                if not tx_id: tx_id = f"FAILED_{int(time.time())}"
                 
-                if not tx_id:
-                    tx_id = f"FAILED_{int(time.time())}"
-                
-                if hasattr(self.executor, "_chaos_hooks"):
-                    if self.executor._chaos_hooks.get("crash_post_click"):
-                        actual_side_effect = True
+                if hasattr(self.executor, "_chaos_hooks") and self.executor._chaos_hooks.get("crash_post_click"):
+                    actual_side_effect = True
 
                 if tx_reserved and not tx_pre_committed:
                     money_manager.db.rollback(tx_id)
@@ -106,41 +71,21 @@ class ExecutionEngine:
                     money_manager.db.mark_manual_check(tx_id)
                     final_exc = Exception("PRE_COMMIT UNCERTAINTY")
                 elif actual_side_effect or tx_placed:
-                    final_exc = Exception("PANIC Ledger Triggered")
                     money_manager.db.write_panic_file(tx_id)
+                    final_exc = Exception("PANIC Ledger Triggered")
 
                 self.breaker.record_failure(final_exc)
-                self.logger.error(f"❌ Bet Fallita: {final_exc}")
-                
-                if hasattr(self.executor, "logger") and self.executor.logger.name == "MockExecutor":
-                    self.logger.critical(f"🕵️ TEST MOCK ERROR TRACE: {final_exc}")
-
                 self.bus.emit("BET_FAILED", {"tx_id": tx_id, "reason": str(final_exc)})
                 
-            finally:
-                self.current_bet_start = 0
-
         finally:
-            with self._active_tx_lock:
-                self._active_tx -= 1
+            with self._active_tx_lock: self._active_tx -= 1
 
     def stop_engine(self):
-        self.logger.info("🔴 STOP MOTORE: Blocco nuovi segnali.")
         self.betting_enabled = False
         self._shutdown_event.set()
-
-        timeout = 30
         start = time.time()
-
         while True:
             with self._active_tx_lock:
-                if self._active_tx == 0:
-                    break
-
-            if time.time() - start > timeout:
-                self.logger.critical("💀 Shutdown timeout. Transazione ancora attiva. Forzatura chiusura.")
-                break
-
+                if self._active_tx == 0: break
+            if time.time() - start > 30: break
             time.sleep(0.05)
-
-        self.logger.info("🛑 Motore fermato in sicurezza.")
