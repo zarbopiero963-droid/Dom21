@@ -1,58 +1,44 @@
 import os
-import json
-import logging
-import hashlib
-import base64
 import platform
-import uuid
-import subprocess
-from cryptography.fernet import Fernet, InvalidToken
-from core.config_paths import VAULT_FILE
+import getpass
+import logging
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import base64
+from pathlib import Path
 
-class Vault:
-    def __init__(self):
-        self.logger = logging.getLogger("Vault")
-        self.key = self._generate_machine_key()
-        self.cipher = Fernet(self.key)
-        self.vault_path = VAULT_FILE
+class SecurityModule:
+    def __init__(self, logger=None):
+        self.logger = logger or logging.getLogger("Security")
+        self._cached_fernet = None
+        self.salt_path = os.path.join(str(Path.home()), ".superagent_data", ".device.salt")
 
-    def _generate_machine_key(self):
-        if os.environ.get("GITHUB_ACTIONS") == "true":
-            return base64.urlsafe_b64encode(hashlib.sha256(b"CI").digest()[:32])
+    def _get_machine_fingerprint(self):
+        if os.environ.get("CI_BYPASS_SECURITY") == "1": return b"CI_MOCK_FINGERPRINT_123"
+        try: return f"{platform.node()}_{getpass.getuser()}_{platform.system()}_{platform.machine()}".encode('utf-8')
+        except: return b"FALLBACK_MACHINE_ID"
 
-        mid = "FALLBACK"
-        try:
-            if platform.system() == "Windows":
-                mid = subprocess.check_output("wmic csproduct get uuid", shell=True).decode().split('\n')[1].strip()
-            elif platform.system() == "Linux":
-                with open("/etc/machine-id", encoding="utf-8") as f:
-                    mid = f.read().strip()
-            else:
-                mid = str(uuid.getnode())
-        except Exception:
-            mid = platform.node()
+    def _get_or_create_salt(self):
+        if os.path.exists(self.salt_path):
+            with open(self.salt_path, "rb") as f: return f.read()
+        new_salt = os.urandom(16)
+        os.makedirs(os.path.dirname(self.salt_path), exist_ok=True)
+        with open(self.salt_path, "wb") as f: f.write(new_salt)
+        return new_salt
 
-        combined = f"{mid}|{os.getenv('USERNAME','')}"
-        return base64.urlsafe_b64encode(hashlib.sha256(combined.encode()).digest()[:32])
+    def _get_fernet(self):
+        if self._cached_fernet: return self._cached_fernet
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self._get_or_create_salt(), iterations=390000)
+        self._cached_fernet = Fernet(base64.urlsafe_b64encode(kdf.derive(self._get_machine_fingerprint())))
+        return self._cached_fernet
 
-    def decrypt_data(self):
-        try:
-            if not os.path.exists(self.vault_path):
-                return {}
-            with open(self.vault_path, "rb") as f:
-                return json.loads(self.cipher.decrypt(f.read()).decode())
-        except InvalidToken:
-            self.logger.error("Vault decrypt failed: Invalid Token")
-            return {}
+    def encrypt(self, data: str) -> str:
+        try: return self._get_fernet().encrypt(data.encode('utf-8')).decode('utf-8')
+        except: return ""
+
+    def decrypt(self, token: str) -> str:
+        try: return self._get_fernet().decrypt(token.encode('utf-8')).decode('utf-8')
         except Exception as e:
-            self.logger.error("Vault error: %s", e)
-            return {}
-
-    def encrypt_data(self, data):
-        try:
-            os.makedirs(os.path.dirname(self.vault_path), exist_ok=True)
-            with open(self.vault_path, "wb") as f:
-                f.write(self.cipher.encrypt(json.dumps(data).encode()))
-            return True
-        except Exception:
-            return False
+            self.logger.critical(f"FATAL DECRYPT: Hardware modificato. ({e})")
+            return ""
