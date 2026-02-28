@@ -59,7 +59,6 @@ class Database:
                     raise
 
     def reserve(self, tx_id, amount, table_id=1, teams="", match_hash=""):
-        # 🛡️ FIX ZOMBIE_TX / MATH_POISON: Scudo anti-corruzione per SQLite
         try:
             amt = float(amount)
             if math.isnan(amt) or math.isinf(amt) or amt <= 0:
@@ -71,6 +70,11 @@ class Database:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
+                    # 🛡️ FIX ZOMBIE_TX: Protezione saldo negativo
+                    row = self.conn.execute("SELECT current_balance FROM balance WHERE id = 1").fetchone()
+                    if not row or float(row["current_balance"]) < float(amt):
+                        raise ValueError(f"Fondi insufficienti. Richiesti {amt}, disponibili {row['current_balance'] if row else 'N/A'}")
+
                     self.conn.execute("""
                         INSERT INTO journal (tx_id, amount, status, timestamp, table_id, teams, match_hash)
                         VALUES (?, ?, 'RESERVED', ?, ?, ?, ?)
@@ -117,7 +121,6 @@ class Database:
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
                     row = self.conn.execute("SELECT amount FROM journal WHERE tx_id = ? AND status = 'RESERVED'", (tx_id,)).fetchone()
-                    # 🛡️ FIX: Sicurezza extra nel caso in cui vecchi dati corrotti siano già nel DB
                     if row and row["amount"] is not None:
                         self.conn.execute("UPDATE journal SET status = 'VOID' WHERE tx_id = ?", (tx_id,))
                         self.conn.execute("UPDATE balance SET current_balance = current_balance + ? WHERE id = 1", (float(row["amount"]),))
@@ -161,3 +164,54 @@ class Database:
                         self.conn.execute("COMMIT")
                         os.remove(p_file)
                     except: self.conn.execute("ROLLBACK")
+
+    # 🛡️ Metodo Sicuro per l'Engine
+    def mark_manual_check(self, tx_id):
+        with self._write_lock:
+            with self._lock:
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self.conn.execute(
+                        "UPDATE journal SET status='MANUAL_CHECK' WHERE tx_id=?",
+                        (tx_id,)
+                    )
+                    self.conn.execute("COMMIT")
+                except:
+                    self.conn.execute("ROLLBACK")
+                    raise
+
+    # 🛡️ Metodo Sicuro per il Money Manager
+    def commit(self, tx_id, payout):
+        with self._write_lock:
+            with self._lock:
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    row = self.conn.execute(
+                        "SELECT amount FROM journal WHERE tx_id=?",
+                        (tx_id,)
+                    ).fetchone()
+
+                    if not row:
+                        raise ValueError("Transazione non trovata")
+
+                    stake = float(row["amount"])
+                    profit = float(payout) - stake
+
+                    self.conn.execute(
+                        "UPDATE journal SET status='SETTLED', payout=? WHERE tx_id=?",
+                        (payout, tx_id)
+                    )
+
+                    self.conn.execute(
+                        "UPDATE balance SET current_balance = current_balance + ? WHERE id = 1",
+                        (profit + stake,)
+                    )
+
+                    self.conn.execute(
+                        "UPDATE balance SET peak_balance = MAX(peak_balance, current_balance) WHERE id = 1"
+                    )
+
+                    self.conn.execute("COMMIT")
+                except:
+                    self.conn.execute("ROLLBACK")
+                    raise
