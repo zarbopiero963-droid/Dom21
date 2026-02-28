@@ -1,31 +1,31 @@
-import yaml
 import os
+import yaml
 import logging
-from core.config_paths import CONFIG_FILE, CONFIG_DIR
+from core.config_paths import CONFIG_DIR
 
 class ConfigLoader:
-    def __init__(self, logger=None):
-        self.logger = logger or logging.getLogger("ConfigLoader")
-        self.config_path = CONFIG_FILE
-        self._ensure_config_exists()
-
-    def _ensure_config_exists(self):
-        if not os.path.exists(self.config_path):
-            os.makedirs(CONFIG_DIR, exist_ok=True)
-            default_conf = {
-                "system": {"version": "8.5", "debug_level": "info"},
-                "openrouter": {"api_key": "", "model": "google/gemini-2.0-flash-lite-preview-02-05:free"},
-                "betting": {"allow_place": False}
-            }
-            try:
-                with open(self.config_path, "w") as f:
-                    yaml.dump(default_conf, f)
-            except Exception as e:
-                self.logger.error(f"Errore config: {e}")
+    def __init__(self):
+        self.config_path = os.path.join(CONFIG_DIR, "config.yaml")
+        self.logger = logging.getLogger("ConfigLoader")
 
     def load_config(self):
+        if not os.path.exists(self.config_path):
+            self._create_default()
         try:
-            if not os.path.exists(self.config_path): self._ensure_config_exists()
             with open(self.config_path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
-        except Exception: return {}
+                data = yaml.safe_load(f)
+                return data if data is not None else {}
+        except Exception as e:
+            self.logger.warning(f"Errore durante il caricamento di config.yaml: {e}. Fallback su default vuoto.")
+            return {}
+
+    def _create_default(self):
+        default_config = {
+            "telegram": {"api_id": "", "api_hash": ""},
+            "betting": {"allow_place": False},
+            "selected_chats": []
+        }
+        try:
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(default_config, f)
+        except: pass
