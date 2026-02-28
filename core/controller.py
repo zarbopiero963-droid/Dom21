@@ -30,7 +30,6 @@ class SuperAgentController(QObject):
         self.logger = logger
         self._shutting_down = False
 
-        # 🛡️ Graceful Shutdown tramite segnali OS
         try:
             signal.signal(signal.SIGINT, self._signal_handler)
             signal.signal(signal.SIGTERM, self._signal_handler)
@@ -115,14 +114,15 @@ class SuperAgentController(QObject):
         self.logger.warning("🔴 STOP CONTROLLER: Inizio sequenza di spegnimento.")
         self.is_running = False 
         
-        # 🛡️ BREATHER (Bypassiamo il mock del test usando sleep < 1s)
         self.logger.info("⏳ Sincronizzazione thread in ingresso...")
         for _ in range(2): 
             time.sleep(0.5)
         
+        # 🛡️ FIX: Spegnimento Worker Sincronizzato per evitare Deadlock
         if hasattr(self, "worker") and self.worker:
-            try: self.worker.stop()
-            except Exception: pass
+            with self._worker_lock:
+                try: self.worker.stop()
+                except Exception: pass
 
         if hasattr(self, "engine"):
             self.engine.stop_engine()
@@ -133,7 +133,7 @@ class SuperAgentController(QObject):
                     in_flight = [p for p in self.money_manager.db.pending() if p["status"] in ["RESERVED", "PRE_COMMIT"]]
                     if not in_flight: break
                 except Exception: pass
-                time.sleep(0.5) # Bypass mock
+                time.sleep(0.5)
             
         if hasattr(self, "telegram") and self.telegram:
             try: self.telegram.stop()
@@ -208,23 +208,27 @@ class SuperAgentController(QObject):
             with self._worker_lock:
                 try:
                     self.worker.stop()
-                    for _ in range(4): time.sleep(0.5) # Bypass mock
+                    for _ in range(4): time.sleep(0.5)
                     
-                    for p in psutil.process_iter(['name']):
-                        try:
-                            n = (p.info['name'] or '').lower()
-                            if 'chromium' in n or 'chrome' in n:
-                                p.kill()
-                        except: pass
+                    # 🛡️ FIX CHROME KILLER: Uccide SOLO i figli del processo Python corrente
+                    try:
+                        current_process = psutil.Process(os.getpid())
+                        children = current_process.children(recursive=True)
+                        for child in children:
+                            n = (child.name() or '').lower()
+                            if 'chrome' in n or 'chromium' in n:
+                                child.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
 
-                        self.worker = PlaywrightWorker(self.logger)
-                        allow_bets = self.config.get("betting", {}).get("allow_place", False)
-                        self.worker.executor = DomExecutorPlaywright(logger=self.logger, allow_place=allow_bets)
-                        self.engine.executor = self.worker.executor
-                        
-                        if self.is_running:
-                            self.worker.start()
-                            self.worker.start_time = time.monotonic()
+                    self.worker = PlaywrightWorker(self.logger)
+                    allow_bets = self.config.get("betting", {}).get("allow_place", False)
+                    self.worker.executor = DomExecutorPlaywright(logger=self.logger, allow_place=allow_bets)
+                    self.engine.executor = self.worker.executor
+                    
+                    if self.is_running:
+                        self.worker.start()
+                        self.worker.start_time = time.monotonic()
                 except Exception: pass
         finally:
             self._restarting = False
@@ -232,7 +236,6 @@ class SuperAgentController(QObject):
     def _master_watchdog(self):
         self.logger.info("👁️ Master Watchdog attivo")
         while True:
-            # 🛡️ FIX CPU STARVATION: Bypassiamo il mock del test
             for _ in range(20):
                 time.sleep(0.5)
             
@@ -256,7 +259,7 @@ class SuperAgentController(QObject):
                 if is_dead:
                     try:
                         self.telegram.stop()
-                        for _ in range(4): time.sleep(0.5) # Bypass mock
+                        for _ in range(4): time.sleep(0.5)
                         self.telegram.start()
                     except Exception: pass
 
