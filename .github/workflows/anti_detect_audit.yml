@@ -22,7 +22,7 @@ jobs:
       with:
         python-version: "3.10"
         
-    - name: Installazione Dipendenze (Playwright)
+    - name: Installazione Dipendenze
       run: |
         python -m pip install --upgrade pip
         pip install playwright pytest requests
@@ -32,35 +32,54 @@ jobs:
       
     - name: 🕵️‍♂️ Esecuzione Ultimate Anti-Detect Audit
       env:
-        # Prende il link sicuro dai secrets di GitHub
-        WEBSHARE_DOWNLOAD_URL: ${{ secrets.WEBSHARE_DOWNLOAD_URL }}
+        # Passiamo il Token Webshare (Assicurati che la secret esista e sia corretta!)
+        WEBSHARE_TOKEN: ${{ secrets.WEBSHARE_TOKEN }}
       run: |
-        # Estraiamo e formattiamo il primo proxy italiano dalla tua lista Webshare
+        echo "🔄 Interrogazione API Webshare in corso..."
+        
+        # Micro-script Python corazzato per estrarre l'IP IT
         export PROXY_URL=$(python -c "
-        import os, requests
-        url = os.getenv('WEBSHARE_DOWNLOAD_URL')
-        if url:
-            try:
-                resp = requests.get(url, timeout=10)
-                if resp.status_code == 200:
-                    lines = resp.text.strip().split('\n')
-                    if lines:
-                        # Il formato Webshare TXT è IP:PORTA:USER:PASS
-                        parts = lines[0].strip().split(':')
-                        if len(parts) >= 4:
-                            ip, port, user, pw = parts[0], parts[1], parts[2], parts[3]
-                            # Formattiamo per il tuo script: http://user:pass@ip:porta
-                            print(f'http://{user}:{pw}@{ip}:{port}')
-            except Exception as e:
-                pass
+        import os, sys, requests
+        token = os.getenv('WEBSHARE_TOKEN')
+        
+        if not token:
+            print('❌ ERRORE: WEBSHARE_TOKEN è vuoto. Controlla i Secrets su GitHub!', file=sys.stderr)
+            sys.exit(0)
+            
+        try:
+            url = 'https://proxy.webshare.io/api/v2/proxy/list/?page=1&page_size=100'
+            headers = {'Authorization': f'Token {token}'}
+            r = requests.get(url, headers=headers, timeout=15)
+            
+            if r.status_code != 200:
+                print(f'❌ ERRORE API WEBSHARE (HTTP {r.status_code}): {r.text}', file=sys.stderr)
+                sys.exit(0)
+                
+            proxies = r.json().get('results', [])
+            it_proxies = [x for x in proxies if x.get('country_code') == 'IT' and x.get('valid')]
+            
+            if not it_proxies:
+                print('❌ ERRORE: Webshare ha risposto OK, ma non ci sono proxy IT validi.', file=sys.stderr)
+                sys.exit(0)
+                
+            p = it_proxies[0]
+            # Output finale per la bash
+            print(f\"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}\")
+            
+        except Exception as e:
+            print(f'❌ ERRORE DI RETE PYTHON: {str(e)}', file=sys.stderr)
         ")
 
         if [ -z "$PROXY_URL" ]; then
-            echo "⚠️ Attenzione: Nessun proxy recuperato. Il test partirà senza proxy."
+            echo "⚠️ Attenzione: Nessun proxy recuperato. Guarda l'errore ❌ qui sopra nei log."
         else
-            echo "✅ Proxy Italiano estratto con successo e iniettato nell'Audit!"
+            # Nascondiamo la password per sicurezza nei log di GitHub
+            MASKED_URL=$(echo "$PROXY_URL" | sed -e 's/\(http:\/\/[^:]*:\)[^@]*\(@.*\)/\1***\2/')
+            echo "✅ Proxy Italiano estratto con successo: $MASKED_URL"
         fi
 
-        # IL TUO FILE ORIGINALE RIPRENDE IL CONTROLLO QUI SOTTO:
+        echo "🚀 Avvio dell'Audit Anti-Detect..."
+        
         # xvfb-run emula un display X11 virtuale (fondamentale per ingannare i test anti-bot)
+        # PROXY_URL è già stato esportato nell'ambiente, quindi il tuo script Python lo leggerà
         xvfb-run -a python -u tests/tests/system_integrity/ANTI_DETECT_AUDIT.py
