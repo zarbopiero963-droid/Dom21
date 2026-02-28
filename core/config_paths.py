@@ -2,7 +2,6 @@ import sys
 import os
 from pathlib import Path
 
-# Supporto eseguibile Frozen (PyInstaller). Previene write-error in directory read-only.
 if getattr(sys, 'frozen', False):
     ROOT_DIR = Path.home() / ".superagent_data"
 else:
