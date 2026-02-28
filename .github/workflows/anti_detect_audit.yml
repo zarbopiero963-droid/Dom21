@@ -37,7 +37,6 @@ jobs:
       run: |
         echo "🔄 Interrogazione API Webshare in corso..."
         
-        # Micro-script Python corazzato per estrarre l'IP IT
         export PROXY_URL=$(python -c "
         import os, sys, requests
         token = os.getenv('WEBSHARE_TOKEN')
@@ -47,7 +46,8 @@ jobs:
             sys.exit(0)
             
         try:
-            url = 'https://proxy.webshare.io/api/v2/proxy/list/?page=1&page_size=100'
+            # FIX: Aggiunto &mode=direct come richiesto dalle API V2 di Webshare
+            url = 'https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&page_size=100'
             headers = {'Authorization': f'Token {token}'}
             r = requests.get(url, headers=headers, timeout=15)
             
@@ -63,7 +63,7 @@ jobs:
                 sys.exit(0)
                 
             p = it_proxies[0]
-            # Output finale per la bash
+            # Output finale per esportare la variabile PROXY_URL
             print(f\"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}\")
             
         except Exception as e:
@@ -73,13 +73,9 @@ jobs:
         if [ -z "$PROXY_URL" ]; then
             echo "⚠️ Attenzione: Nessun proxy recuperato. Guarda l'errore ❌ qui sopra nei log."
         else
-            # Nascondiamo la password per sicurezza nei log di GitHub
-            MASKED_URL=$(echo "$PROXY_URL" | sed -e 's/\(http:\/\/[^:]*:\)[^@]*\(@.*\)/\1***\2/')
-            echo "✅ Proxy Italiano estratto con successo: $MASKED_URL"
+            MASKED_URL=\$(echo "\$PROXY_URL" | sed -e 's/\(http:\/\/[^:]*:\)[^@]*\(@.*\)/\1***\2/')
+            echo "✅ Proxy Italiano estratto con successo: \$MASKED_URL"
         fi
 
         echo "🚀 Avvio dell'Audit Anti-Detect..."
-        
-        # xvfb-run emula un display X11 virtuale (fondamentale per ingannare i test anti-bot)
-        # PROXY_URL è già stato esportato nell'ambiente, quindi il tuo script Python lo leggerà
         xvfb-run -a python -u tests/tests/system_integrity/ANTI_DETECT_AUDIT.py
