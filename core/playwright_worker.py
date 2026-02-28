@@ -4,6 +4,8 @@ import traceback
 import logging
 import time
 import concurrent.futures
+import os
+import signal
 
 class PlaywrightWorker:
     def __init__(self, logger=None):
@@ -29,16 +31,12 @@ class PlaywrightWorker:
         self.logger.info("Arresto Playwright Worker richiesto...")
         self.running = False
         
-        # 🛡️ 1. Inseriamo la Poison Pill
         self.q.put((None, None, None))
         
-        # 🛡️ 2. Aspettiamo PRIMA il Thread. Questo garantisce che tutta la coda
-        # venga smaltita e inviata al ThreadPool con successo.
         if self.thread:
             self.logger.info("Attendiamo lo svuotamento della coda e la fine delle scommesse...")
             self.thread.join()
             
-        # 🛡️ 3. SOLO ORA chiudiamo il Pool (che ormai ha finito tutto)
         if self._pool:
             self.logger.info("Chiusura ThreadPool...")
             self._pool.shutdown(wait=True)
@@ -61,9 +59,11 @@ class PlaywrightWorker:
         active_threads = threading.active_count()
         self.logger.warning(f"Thread attivi nel sistema: {active_threads}")
         
-        if active_threads > 15:
-            self.logger.critical("⚠️ ALLARME LEAK: Troppi thread zombie accumulati.")
-            self.logger.critical("Il sistema è degradato. Richiesto intervento del Watchdog OS (Restart PID).")
+        # 🛡️ FIX ZOMBIE LEAK: Hard reset OS se i thread accumulati rischiano di saturare la RAM
+        if active_threads > 20:
+            self.logger.critical("💀 FATAL LEAK: Troppi thread zombie. OS Watchdog Trigger!")
+            self.logger.critical("Eseguo SIGTERM su me stesso per pulizia profonda via Supervisor/Systemd.")
+            os.kill(os.getpid(), signal.SIGTERM)
 
     def _run(self):
         self.logger.info("Worker Loop Iniziato.")
@@ -76,7 +76,6 @@ class PlaywrightWorker:
                 func, args, kwargs = task
                 
                 if func is None:
-                    # Poison Pill ricevuta. Uscita sicura.
                     self.q.task_done()
                     break 
                 
