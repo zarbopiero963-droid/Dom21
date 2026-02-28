@@ -5,9 +5,6 @@ import os
 from PySide6.QtCore import QObject, Signal
 from core.config_paths import CONFIG_DIR
 
-# Nessun import di classi Core qui (es. DomExecutor)
-# Riceve 'executor' come oggetto generico nel costruttore
-
 class AutoMapperWorker(QObject):
     finished = Signal(dict)
     log = Signal(str)
@@ -22,7 +19,6 @@ class AutoMapperWorker(QObject):
         try:
             self.log.emit(f"🚀 AI Auto-Mapping: {self.url}")
 
-            # Usiamo getattr per evitare import diretti di tipo
             launch_method = getattr(self.executor, "launch_browser", None)
             if launch_method and not launch_method():
                 self.log.emit("❌ Browser fail")
@@ -42,14 +38,24 @@ class AutoMapperWorker(QObject):
 
             self._auto_scroll(page)
 
-            cdp = page.context.new_cdp_session(page)
-            cdp.send("DOM.enable")
+            # 🛡️ GOD MODE: Guard su CDP init. Se fallisce, usciamo puliti senza crash.
+            try:
+                cdp = page.context.new_cdp_session(page)
+                cdp.send("DOM.enable")
+            except Exception as e:
+                self.log.emit(f"❌ Impossibile avviare CDP Session (browser remoto o permessi negati): {e}")
+                self.finished.emit({})
+                return
 
             start_scan = time.time()
-            resp = cdp.send("DOM.getFlattenedDocument", {"depth": -1, "pierce": True})
+            try:
+                resp = cdp.send("DOM.getFlattenedDocument", {"depth": -1, "pierce": True})
+            except Exception as e:
+                self.log.emit(f"⚠️ CDP Full Scan fallito ({e}). Tentativo con fallback depth=4...")
+                resp = cdp.send("DOM.getFlattenedDocument", {"depth": 4, "pierce": False})
             
             if time.time() - start_scan > 20:
-                self.log.emit("⚠️ CDP Scan lento")
+                self.log.emit("⚠️ CDP Scan lento. Rilevato DOM massivo.")
 
             nodes = resp.get("nodes", [])
             elements = self._extract(nodes)
@@ -117,8 +123,16 @@ class AutoMapperWorker(QObject):
     def _is_interactive(self, n): 
         tag=n.get("nodeName","").upper()
         return tag in ["BUTTON","INPUT","A"] or "btn" in self._attr(n,"class")
+        
     def _css(self, n):
-        a=self._attrs(n); tag=n.get("nodeName","").lower()
-        if "id" in a and not re.search(r'\d{5,}', a["id"]): return f"#{a['id']}"
-        if "name" in a: return f"{tag}[name='{a['name']}']"
-        return f"{tag}.{a['class'].split()[0]}" if "class" in a else None
+        a = self._attrs(n)
+        tag = n.get("nodeName","").lower()
+        if "id" in a and not re.search(r'\d{5,}', a["id"]): 
+            return f"#{a['id']}"
+        if "name" in a: 
+            return f"{tag}[name='{a['name']}']"
+            
+        if "class" in a and a["class"].strip(): 
+            return f"{tag}.{a['class'].split()[0]}"
+            
+        return None
