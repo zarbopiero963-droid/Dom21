@@ -6,6 +6,7 @@ import traceback
 import logging
 import psutil
 import sqlite3
+import uuid
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = current_dir
@@ -70,15 +71,21 @@ c = SuperAgentController(logging.getLogger("ENDURANCE"))
 c.start_listening()
 
 try:
-    orig_reserve = c.money_manager.reserve
-    # 🛡️ FIX: Aggiunto **kwargs per assorbire table_id e teams previsti dal nuovo Engine
-    def mock_disk_full(*args, **kwargs): raise sqlite3.OperationalError("database or disk is full")
-    c.money_manager.reserve = mock_disk_full
+    # 🛡️ FIX ARCHITETTURALE: Aggiornato l'hook al nuovo metodo atomico
+    orig_reserve = c.money_manager.get_stake_and_reserve
+    
+    def mock_disk_full(*args, **kwargs): 
+        raise sqlite3.OperationalError("database or disk is full")
+        
+    c.money_manager.get_stake_and_reserve = mock_disk_full
+    
     try:
         c.engine.process_signal({"teams": "DISK_FULL", "market": "1"}, c.money_manager)
         ok("DISK_FULL_SURVIVAL", "Errore 'Disco Pieno' intercettato. Il bot non è crashato.")
-    except Exception as e: fail("DISK_FULL_SURVIVAL", f"L'errore disco pieno ha ucciso il bot: {e}")
-    c.money_manager.reserve = orig_reserve
+    except Exception as e: 
+        fail("DISK_FULL_SURVIVAL", f"L'errore disco pieno ha ucciso il bot: {e}")
+        
+    c.money_manager.get_stake_and_reserve = orig_reserve
     
     # 🧹 FIX: Il disco pieno attiva il blocco fatale del Breaker persistente. Sblocchiamolo per i prossimi test.
     if hasattr(c.engine, 'breaker'):
