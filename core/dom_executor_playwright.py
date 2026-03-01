@@ -36,6 +36,11 @@ class DomExecutorPlaywright:
             except: pass
             finally: self.context = self.browser = self.playwright = None
 
+    # 🛡️ FIX: Backward Compatibility per tester_v4.py
+    def close(self):
+        """Alias legacy per il metodo stop(). Requisito della test suite v4."""
+        self.stop()
+
     def place_bet(self, teams, market, stake): 
         hook = self._chaos_hooks
 
@@ -63,7 +68,7 @@ class DomExecutorPlaywright:
                 except: return False
         return True
 
-    # 🛡️ FIX 3: Backward Compatibility per REAL_ATTACK_TEST e GOD_MODE
+    # 🛡️ FIX: Backward Compatibility per REAL_ATTACK_TEST e GOD_MODE
     def get_balance(self):
         """
         Metodo richiesto dai REAL_ATTACK_TEST.
