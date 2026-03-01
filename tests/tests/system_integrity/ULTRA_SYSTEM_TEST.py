@@ -107,7 +107,6 @@ try:
     c2 = create_mocked_controller()
     pending = c2.db.pending()
     
-    # Nel nuovo paradigma 10.1, se la morte avviene in place_bet (doppio mock_kill), la transazione è in PRE_COMMIT
     if len(pending) == 0: 
         fail("DOUBLE_BET_REBOOT", "Nessuna bet trovata a sistema (attesa PRE_COMMIT).", "execution_engine.py", "Transazione persa.")
     else:
@@ -136,7 +135,10 @@ except Exception as e: fail("MISSING_FIN_WATCHDOG", str(e), "mm", "Unknown")
 # TEST 4: OOM & Over-Reserve Concurrency
 try:
     c = create_mocked_controller()
-    c.db.update_bankroll(100.0, 100.0)
+    
+    # 🛡️ FIX: Leggiamo il peak attuale per non violare l'invariante C-Level abbassandolo
+    current_bal, peak_bal = c.db.get_balance()
+    c.db.update_bankroll(100.0, max(peak_bal, 100.0))
     
     def spam():
         try: c.money_manager.get_stake_and_reserve(str(uuid.uuid4()), 2.0, 2.0, teams="SpamTeam")
@@ -148,7 +150,7 @@ try:
     
     pending_sum = sum([float(p['amount']) for p in c.db.pending() if p['amount']])
     
-    # Il limite massimo di esposizione nel MoneyManager è 200, ma il bankroll è 100
+    # Il limite massimo di esposizione nel MoneyManager è 200, ma il bankroll simulato è 100
     if pending_sum > 100.0: fail("OVER_RESERVE", f"Esposizione illegale: {pending_sum}€ su bankroll 100€", "mm", "Bancarotta")
     else: ok("OVER_RESERVE", f"Invariante saldo protetto. Massima esposizione raggiunta: {pending_sum}€")
     
@@ -183,13 +185,10 @@ try:
     def drop(*args, **kwargs): raise ConnectionError("internet down simulato")
     c.worker.executor.place_bet = drop
     
-    # Bypassiamo il circuito per forzare l'errore in fase di bet
     c.engine.process_signal({"teams": "ZOMBIE", "market": "1", "stake": "2.0"}, c.money_manager)
     
     zombies = [p for p in c.db.pending() if p['status'] == 'PRE_COMMIT' and p['teams'] == 'ZOMBIE']
     
-    # Se il broker fallisce a livello di DOM/Rete, il tx diventa MANUAL_CHECK o viene rollbackato.
-    # Non deve MAI restare in RESERVED/PRE_COMMIT eternamente bloccando fondi.
     has_zombies = any(p['teams'] == "ZOMBIE" for p in c.db.pending() if p['status'] not in ["MANUAL_CHECK", "VOID"])
     
     if has_zombies: fail("ZOMBIE_TX", "Fondi bloccati in stato indefinito post-crash.", "engine", "Leak fondi.")
