@@ -111,7 +111,8 @@ try:
         fail("DOUBLE_BET_REBOOT", "Nessuna bet trovata a sistema (attesa PRE_COMMIT).", "execution_engine.py", "Transazione persa.")
     else:
         ok("DOUBLE_BET_REBOOT", "Crash catturato. Transazione ancorata in database.")
-        for p in pending: c2.money_manager.refund(p['tx_id'])
+        for p in pending: 
+            if p['teams'] == "REBOOT_TEST": c2.money_manager.refund(p['tx_id'])
 except Exception as e: fail("DOUBLE_BET_REBOOT", str(e), "engine", "Unknown")
 
 # TEST 2: EventBus Blocking
@@ -136,7 +137,6 @@ except Exception as e: fail("MISSING_FIN_WATCHDOG", str(e), "mm", "Unknown")
 try:
     c = create_mocked_controller()
     
-    # 🛡️ FIX: Leggiamo il peak attuale per non violare l'invariante C-Level abbassandolo
     current_bal, peak_bal = c.db.get_balance()
     c.db.update_bankroll(100.0, max(peak_bal, 100.0))
     
@@ -148,13 +148,15 @@ try:
     for t in threads: t.start()
     for t in threads: t.join()
     
-    pending_sum = sum([float(p['amount']) for p in c.db.pending() if p['amount']])
+    # 🛡️ FIX: Filtriamo chirurgicamente solo le bet di questo test per evitare scorie di test legacy.
+    pending_sum = sum([float(p['amount']) for p in c.db.pending() if p['amount'] and p['teams'] == 'SpamTeam'])
     
-    # Il limite massimo di esposizione nel MoneyManager è 200, ma il bankroll simulato è 100
     if pending_sum > 100.0: fail("OVER_RESERVE", f"Esposizione illegale: {pending_sum}€ su bankroll 100€", "mm", "Bancarotta")
     else: ok("OVER_RESERVE", f"Invariante saldo protetto. Massima esposizione raggiunta: {pending_sum}€")
     
-    for p in c.db.pending(): c.money_manager.refund(p['tx_id'])
+    for p in c.db.pending(): 
+        if p['teams'] == 'SpamTeam':
+            c.money_manager.refund(p['tx_id'])
 except Exception as e: fail("OVER_RESERVE", str(e), "mm", "Unknown")
 
 # TEST 5: Math Poisoning C-Level Defense
@@ -180,14 +182,15 @@ except Exception as e: fail("MATH_POISON", str(e), "mm", "Unknown")
 # TEST 6: Zombie Transaction (Rollback on failure)
 try:
     c = create_mocked_controller()
-    for p in c.db.pending(): c.money_manager.refund(p['tx_id'])
+    for p in c.db.pending(): 
+        # Pulizia cautelativa test concorrenti
+        try: c.money_manager.refund(p['tx_id'])
+        except: pass
     
     def drop(*args, **kwargs): raise ConnectionError("internet down simulato")
     c.worker.executor.place_bet = drop
     
     c.engine.process_signal({"teams": "ZOMBIE", "market": "1", "stake": "2.0"}, c.money_manager)
-    
-    zombies = [p for p in c.db.pending() if p['status'] == 'PRE_COMMIT' and p['teams'] == 'ZOMBIE']
     
     has_zombies = any(p['teams'] == "ZOMBIE" for p in c.db.pending() if p['status'] not in ["MANUAL_CHECK", "VOID"])
     
