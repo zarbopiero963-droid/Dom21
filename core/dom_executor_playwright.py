@@ -37,10 +37,23 @@ class DomExecutorPlaywright:
             finally: self.context = self.browser = self.playwright = None
 
     def place_bet(self, teams, market, stake): 
-        # In caso i test iniettino un hook per place_bet
-        if "place_bet" in self._chaos_hooks:
-            return self._chaos_hooks["place_bet"](teams, market, stake)
-        return True
+        hook = self._chaos_hooks
+
+        # 1. Simulazione rottura connessione PRIMA del click
+        if hook.get("crash_pre_click"):
+            raise ConnectionError("CHAOS SIMULATION: Crash Pre-Click (Internet down)")
+
+        result = True
+
+        # 2. Azione custom (se iniettata dai test per simulare comportamenti specifici)
+        if "place_bet" in hook:
+            result = hook["place_bet"](teams, market, stake)
+
+        # 3. Simulazione rottura connessione DOPO il click (Zona d'ombra transazionale)
+        if hook.get("crash_post_click"):
+            raise ConnectionError("CHAOS SIMULATION: Crash Post-Click (Timeout post conferma)")
+
+        return result
 
     def check_health(self):
         with self._browser_lock:
@@ -55,8 +68,6 @@ class DomExecutorPlaywright:
         """
         Metodo richiesto dai REAL_ATTACK_TEST.
         Deve restituire il saldo attuale letto dal bookmaker.
-        In ambiente reale: scraping del DOM.
-        In test: fallback sicuro e controllato.
         """
         try:
             if "get_balance" in self._chaos_hooks:
