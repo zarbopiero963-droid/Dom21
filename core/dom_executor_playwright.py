@@ -40,6 +40,12 @@ class DomExecutorPlaywright:
     def close(self):
         """Alias legacy per il metodo stop(). Requisito della test suite v4."""
         self.stop()
+        
+    # 🛡️ FIX: Backward Compatibility per tester_v4.py
+    def recycle_browser(self):
+        """Alias legacy per la test suite v4. Chiude e riavvia il browser."""
+        self.stop()
+        return self.launch_browser()
 
     def place_bet(self, teams, market, stake): 
         hook = self._chaos_hooks
