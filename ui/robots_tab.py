@@ -1,221 +1,153 @@
-import os
-import yaml
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
-    QPushButton, QLabel, QLineEdit, QFormLayout,
-    QCheckBox, QComboBox, QGroupBox
-)
-from core.config_paths import ROBOTS_FILE, CONFIG_FILE
-from core.secure_storage import RobotManager, BookmakerManager
+import logging
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QPushButton, 
+                               QLabel, QHBoxLayout, QMessageBox, QGroupBox)
+from PySide6.QtCore import Qt, QThread, Signal
+
+class ManualLoginWorker(QThread):
+    """
+    Thread separato per aprire il browser visibile senza congelare la UI di PySide6.
+    """
+    finished_signal = Signal(bool)
+
+    def __init__(self, executor, url):
+        super().__init__()
+        self.executor = executor
+        self.url = url
+
+    def run(self):
+        try:
+            # Chiamata bloccante: aspetta finché l'utente non preme la 'X' su Chrome
+            success = self.executor.manual_login_window(self.url)
+            self.finished_signal.emit(success)
+        except Exception as e:
+            logging.getLogger("UI").error(f"Errore fatale in manual_login_window: {e}")
+            self.finished_signal.emit(False)
 
 
 class RobotsTab(QWidget):
-    def __init__(self, logger, controller):
+    def __init__(self, controller=None):
         super().__init__()
-        self.logger = logger
         self.controller = controller
-        self.manager = RobotManager()
-        self.current_idx = -1
+        self.worker = None
 
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
 
-        # =========================
-        # PANNELLO SINISTRO
-        # =========================
-        left_panel = QVBoxLayout()
-        left_panel.addWidget(QLabel("🤖 ROBOTS ATTIVI:"))
+        # =========================================================
+        # 🤖 SEZIONE COMANDI ROBOT PRINCIPALI
+        # (Se hai già bottoni di Avvio/Stop del bot, vanno qui)
+        # =========================================================
+        header_label = QLabel("🤖 <b>PANNELLO DI CONTROLLO ROBOT</b>")
+        header_label.setStyleSheet("font-size: 16px; margin-bottom: 10px;")
+        layout.addWidget(header_label)
 
-        self.list = QListWidget()
-        self.list.currentRowChanged.connect(self.select_item)
-        left_panel.addWidget(self.list)
+        # -- Inserisci qui eventuali altri tuoi bottoni del Robot --
+        
+        layout.addSpacing(20)
 
-        btn_del = QPushButton("❌ Elimina Robot")
-        btn_del.setStyleSheet("background-color: #c0392b; color: white;")
-        btn_del.clicked.connect(self.delete_selected)
-        left_panel.addWidget(btn_del)
-
-        # =========================
-        # PANNELLO DESTRO
-        # =========================
-        right_group = QGroupBox("Configurazione Strategia")
-        right_layout = QVBoxLayout()
-        form = QFormLayout()
-
-        # Start / Stop robot
-        self.robot_active_btn = QPushButton("🟢 Robot ATTIVO")
-        self.robot_active_btn.setCheckable(True)
-        self.robot_active_btn.setChecked(True)
-        self.robot_active_btn.setStyleSheet("""
-            QPushButton:checked { background-color: #2e7d32; color: white; font-weight: bold; padding: 10px;}
-            QPushButton:!checked { background-color: #f57c00; color: white; font-weight: bold; padding: 10px;}
+        # =========================================================
+        # 🛡️ SEZIONE ANTI-DETECT & ZERO-TOUCH RECOVERY
+        # =========================================================
+        stealth_group = QGroupBox("🛡️ Gestione Sessione (Anti-Detect & Cloud)")
+        stealth_group.setStyleSheet("""
+            QGroupBox { 
+                font-weight: bold; 
+                border: 1px solid #444; 
+                border-radius: 8px; 
+                margin-top: 15px; 
+                padding-top: 20px; 
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                color: #00ccff;
+            }
         """)
-        self.robot_active_btn.toggled.connect(self.on_robot_toggle)
+        stealth_layout = QVBoxLayout(stealth_group)
 
-        self.in_name = QLineEdit()
-        self.in_name.textChanged.connect(self.update_data)
-
-        self.in_book = QComboBox()
-        self.in_book.addItems([b.get("id") for b in BookmakerManager().all()])
-        self.in_book.currentTextChanged.connect(self.update_data)
-
-        self.in_triggers = QLineEdit()
-        self.in_triggers.textChanged.connect(self.update_data)
-
-        self.in_exclude = QLineEdit()
-        self.in_exclude.textChanged.connect(self.update_data)
-
-        # modalità MM
-        self.in_mm_mode = QComboBox()
-        self.in_mm_mode.addItems(["Stake Fisso", "Roserpina (Progressione)"])
-        self.in_mm_mode.currentTextChanged.connect(self.update_data)
-
-        self.in_stake = QLineEdit()
-        self.in_stake.textChanged.connect(self.update_data)
-
-        form.addRow("Stato Robot:", self.robot_active_btn)
-        form.addRow("Nome Robot:", self.in_name)
-        form.addRow("Collega a Account:", self.in_book)
-        form.addRow("Trigger Words:", self.in_triggers)
-        form.addRow("Exclude Words:", self.in_exclude)
-        form.addRow("Gestione Cassa:", self.in_mm_mode)
-        form.addRow("Stake Fisso (€):", self.in_stake)
-
-        right_layout.addLayout(form)
-
-        btn_add = QPushButton("➕ Crea Nuovo Robot")
-        btn_add.setStyleSheet(
-            "background-color: #27ae60; color: white; font-weight: bold; padding: 8px;"
+        info_label = QLabel(
+            "<span style='color: #aaaaaa;'>Se il bot viene bloccato, apri Chrome da qui, fai il login su <b>Bet365</b> e <b>chiudi la finestra</b> per ripristinare i cookie.</span>"
         )
-        btn_add.clicked.connect(self.add_robot)
-        right_layout.addWidget(btn_add)
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("font-size: 12px; margin-bottom: 10px;")
+        stealth_layout.addWidget(info_label)
 
-        right_group.setLayout(right_layout)
+        # PULSANTE LOGIN MANUALE
+        self.login_btn = QPushButton("🔓 APRI BROWSER VISIBILE (LOGIN BET365)")
+        self.login_btn.setMinimumHeight(60)
+        self.login_btn.setCursor(Qt.PointingHandCursor)
+        self.login_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #b71c1c; 
+                color: white; 
+                font-weight: bold; 
+                font-size: 15px; 
+                border: 2px solid #ff5252; 
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+        self.login_btn.clicked.connect(self.start_manual_login)
+        stealth_layout.addWidget(self.login_btn)
 
-        layout.addLayout(left_panel, 1)
-        layout.addWidget(right_group, 2)
+        layout.addWidget(stealth_group)
+        layout.addStretch()
 
-        self.refresh()
-
-    # =========================
-    # REFRESH LISTA
-    # =========================
-    def refresh(self):
-        self.list.clear()
-
-        self.in_book.blockSignals(True)
-        self.in_book.clear()
-        self.in_book.addItems([b.get("id") for b in BookmakerManager().all()])
-        self.in_book.blockSignals(False)
-
-        for r in self.manager.all():
-            status_icon = "🟢" if r.get("is_active", True) else "⏸️"
-            self.list.addItem(f"{status_icon} {r['name']} ➔ {r.get('bookmaker_id', 'Nessuno')}")
-
-    # =========================
-    # SELECT ROBOT
-    # =========================
-    def select_item(self, idx):
-        if idx < 0:
+    # =========================================================
+    # LOGICA DI ESECUZIONE
+    # =========================================================
+    def start_manual_login(self):
+        # 1. Controlli di sicurezza
+        if not self.controller or not hasattr(self.controller, 'worker') or not self.controller.worker:
+            QMessageBox.warning(self, "Attenzione", "Il motore non è ancora completamente avviato.")
+            return
+            
+        executor = self.controller.worker.executor
+        if not executor:
+            QMessageBox.warning(self, "Attenzione", "L'esecutore Browser non è disponibile.")
             return
 
-        self.current_idx = idx
-        d = self.manager.all()[idx]
+        # 2. Modifica grafica del bottone (Stato di attesa)
+        self.login_btn.setEnabled(False)
+        self.login_btn.setText("⏳ BROWSER APERTO A SCHERMO... (Fai login e chiudi la finestra con la 'X')")
+        self.login_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e65100; 
+                color: white; 
+                font-weight: bold; 
+                font-size: 14px; 
+                border: 2px solid #ffb300; 
+                border-radius: 8px;
+            }
+        """)
 
-        self.in_name.blockSignals(True)
-        self.in_book.blockSignals(True)
-        self.in_triggers.blockSignals(True)
-        self.in_exclude.blockSignals(True)
-        self.in_mm_mode.blockSignals(True)
-        self.in_stake.blockSignals(True)
-        self.robot_active_btn.blockSignals(True)
+        # 3. Lancio del worker asincrono col link di Bet365
+        bet365_url = "https://www.bet365.it/#/HO/"
+        self.worker = ManualLoginWorker(executor, bet365_url)
+        self.worker.finished_signal.connect(self.on_login_finished)
+        self.worker.start()
 
-        self.in_name.setText(d.get("name", ""))
-        self.in_book.setCurrentText(d.get("bookmaker_id", ""))
-        self.in_triggers.setText(", ".join(d.get("trigger_words", [])))
-        self.in_exclude.setText(", ".join(d.get("exclude_words", [])))
-
-        mm_mode = d.get("mm_mode", "Stake Fisso")
-        if self.in_mm_mode.findText(mm_mode) >= 0:
-            self.in_mm_mode.setCurrentText(mm_mode)
+    def on_login_finished(self, success):
+        # 4. Ripristino bottone quando chiudi Chrome
+        self.login_btn.setEnabled(True)
+        self.login_btn.setText("🔓 APRI BROWSER VISIBILE (LOGIN BET365)")
+        self.login_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #b71c1c; 
+                color: white; 
+                font-weight: bold; 
+                font-size: 15px; 
+                border: 2px solid #ff5252; 
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+        
+        if success:
+            QMessageBox.information(self, "Sessione Ripristinata", "✅ Cookie salvati con successo!\nIl bot riprenderà le scommesse in modalità fantasma (invisibile).")
         else:
-            self.in_mm_mode.setCurrentIndex(0)
-
-        self.in_stake.setText(str(d.get("stake", "2.0")))
-
-        is_active = d.get("is_active", True)
-        self.robot_active_btn.setChecked(is_active)
-        self.robot_active_btn.setText("🟢 Robot ATTIVO" if is_active else "⏸️ Robot IN PAUSA")
-
-        self.in_name.blockSignals(False)
-        self.in_book.blockSignals(False)
-        self.in_triggers.blockSignals(False)
-        self.in_exclude.blockSignals(False)
-        self.in_mm_mode.blockSignals(False)
-        self.in_stake.blockSignals(False)
-        self.robot_active_btn.blockSignals(False)
-
-    # =========================
-    # TOGGLE
-    # =========================
-    def on_robot_toggle(self, checked):
-        self.robot_active_btn.setText("🟢 Robot ATTIVO" if checked else "⏸️ Robot IN PAUSA")
-        self.update_data()
-
-    # =========================
-    # UPDATE DATA
-    # =========================
-    def update_data(self):
-        if self.current_idx < 0:
-            return
-
-        data = self.manager.all()
-        d = data[self.current_idx]
-
-        d["name"] = self.in_name.text()
-        d["bookmaker_id"] = self.in_book.currentText()
-        d["trigger_words"] = [w.strip() for w in self.in_triggers.text().split(",") if w.strip()]
-        d["exclude_words"] = [w.strip() for w in self.in_exclude.text().split(",") if w.strip()]
-        d["mm_mode"] = self.in_mm_mode.currentText()
-        d["stake"] = self.in_stake.text()
-        d["is_active"] = self.robot_active_btn.isChecked()
-
-        self.manager.save_all(data)
-
-        status_icon = "🟢" if d["is_active"] else "⏸️"
-        self.list.item(self.current_idx).setText(
-            f"{status_icon} {d['name']} ➔ {d['bookmaker_id']}"
-        )
-
-    # =========================
-    # ADD ROBOT
-    # =========================
-    def add_robot(self):
-        data = self.manager.all()
-        new_id = f"robot_{len(data)+1}"
-
-        data.append({
-            "id": new_id,
-            "name": "Nuovo Robot",
-            "bookmaker_id": "",
-            "trigger_words": [],
-            "exclude_words": [],
-            "mm_mode": "Stake Fisso",
-            "stake": "2.0",
-            "is_active": True
-        })
-
-        self.manager.save_all(data)
-        self.refresh()
-        self.list.setCurrentRow(len(self.manager.all()) - 1)
-
-    # =========================
-    # DELETE
-    # =========================
-    def delete_selected(self):
-        row = self.list.currentRow()
-        if row < 0:
-            return
-
-        data = self.manager.all()
-        self.manager.delete(data[row]["id"])
-        self.refresh()
+            QMessageBox.critical(self, "Errore", "❌ Operazione annullata o fallita. Il browser è stato chiuso forzatamente.")
