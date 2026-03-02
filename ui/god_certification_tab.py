@@ -1,76 +1,64 @@
 import os
 import sys
-import subprocess
+import io
+import contextlib
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QPushButton, 
                                QTextEdit, QLabel, QHBoxLayout)
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QFont
 
+# Importiamo direttamente la funzione
+from GOD_CERTIFICATION import run_god_certification
+
+class StreamInterceptor(io.StringIO):
+    """Intercetta gli output di 'print' e li emette come segnali riga per riga."""
+    def __init__(self, signal):
+        super().__init__()
+        self.signal = signal
+
+    def write(self, text):
+        super().write(text)
+        if text.strip():
+            self._emit_colored(text.strip())
+            
+    def _emit_colored(self, line):
+        color = "white"
+        if "VERIFIED" in line or "PASSA" in line or "OK" in line or "✅" in line or "🟢" in line:
+            color = "#00ff00" # Verde
+        elif "FAIL" in line or "🔴" in line or "❌" in line:
+            color = "#ff3333" # Rosso
+        elif "🔹" in line or "🚀" in line or "👑" in line:
+            color = "#00ccff" # Azzurro
+        elif "⚠️" in line:
+            color = "yellow"
+
+        self.signal.emit(line, color)
+
+
 class GodWorker(QThread):
     """
-    Esegue GOD_CERTIFICATION.py come processo separato e ne cattura 
-    l'output (stdout/stderr) in tempo reale per stamparlo nella UI.
+    Esegue la certificazione internamente, dirottando stdout verso la UI.
     """
     log_signal = Signal(str, str) # text, color
     finished_signal = Signal(bool)
 
     def run(self):
-        # Percorso assoluto della root del progetto
-        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        script_path = os.path.join(root_dir, "GOD_CERTIFICATION.py")
-
-        if not os.path.exists(script_path):
-            self.log_signal.emit(f"❌ Errore: File non trovato in {script_path}", "red")
-            self.finished_signal.emit(False)
-            return
-
         self.log_signal.emit("🧠 INIZIALIZZAZIONE VALIDAZIONE ARCHITETTURA (GOD CERTIFICATION)...", "cyan")
         self.log_signal.emit("Esecuzione dei test in ambiente isolato.\n", "white")
 
-        # Forziamo Python a non usare il buffer, così l'output arriva riga per riga in tempo reale
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
+        success = False
+        
+        # Dirottiamo temporaneamente l'output standard
+        interceptor = StreamInterceptor(self.log_signal)
+        with contextlib.redirect_stdout(interceptor):
+            try:
+                # Eseguiamo la funzione direttamente
+                success = run_god_certification()
+            except Exception as e:
+                self.log_signal.emit(f"🚨 Errore fatale di esecuzione: {e}", "red")
+                success = False
 
-        try:
-            process = subprocess.Popen(
-                [sys.executable, script_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env=env,
-                cwd=root_dir # Eseguiamo dalla cartella principale
-            )
-
-            # Leggiamo l'output del terminale in diretta
-            for line in iter(process.stdout.readline, ''):
-                if not line:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-
-                # Colorazione intelligente basata sul testo
-                color = "white"
-                if "PASSED" in line or "CERTIFICATO PRODUZIONE" in line or "🟢" in line:
-                    color = "#00ff00" # Verde
-                elif "FAILED" in line or "NON CERTIFICATO" in line or "🔴" in line or "❌" in line:
-                    color = "#ff3333" # Rosso
-                elif "Running:" in line or "🚀" in line:
-                    color = "#00ccff" # Azzurro
-                elif "⚠️" in line:
-                    color = "yellow"
-
-                self.log_signal.emit(line, color)
-
-            process.stdout.close()
-            process.wait()
-
-            success = process.returncode == 0
-            self.finished_signal.emit(success)
-
-        except Exception as e:
-            self.log_signal.emit(f"🚨 Errore fatale di esecuzione: {e}", "red")
-            self.finished_signal.emit(False)
+        self.finished_signal.emit(success)
 
 
 class GodCertificationTab(QWidget):
