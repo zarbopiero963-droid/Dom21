@@ -54,7 +54,8 @@ def run_god_certification():
     print(" - Disconnessioni di Rete\n")
     
     print("👑 CERTIFICAZIONE COMPLETATA: IL SISTEMA È PRONTO PER IL LIVE CON FONDI REALI. 👑\n")
-    sys.exit(0)
+    # 🛡️ FIX: Ritorniamo True invece di fare sys.exit(0) per non far crasciare la UI
+    return True
 
 if __name__ == "__main__":
     try:
