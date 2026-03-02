@@ -38,7 +38,7 @@ def main():
         trainer = AITrainerEngine(logger=logger)
         trainer.set_executor(executor)
         
-        monitor = HealthMonitor(logger, executor)
+        monitor = HealthMonitor(logger)
         watchdog = SystemWatchdog(executor=executor, logger=logger)
         parser = CommandParser(logger)
 
