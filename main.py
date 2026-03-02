@@ -39,10 +39,11 @@ def main():
         trainer.set_executor(executor)
         
         monitor = HealthMonitor(logger)
-        watchdog = SystemWatchdog(executor=executor, logger=logger)
+        # 🛡️ FIX: rimosso l'argomento 'executor' inatteso
+        watchdog = SystemWatchdog(logger=logger) 
         parser = CommandParser(logger)
 
-        # 🛡️ FIX: Rimossa la chiamata a monitor.start() inesistente
+        # 🛡️ FIX: rimossa la chiamata a monitor.start() inesistente
         watchdog.start()
 
         exit_code = run_app(
@@ -58,7 +59,7 @@ def main():
             controller.worker.stop()
         
         bus.stop()
-        # 🛡️ FIX: Rimossa la chiamata a monitor.stop() inesistente
+        # 🛡️ FIX: rimossa la chiamata a monitor.stop() inesistente
         watchdog.stop()
         sys.exit(exit_code)
 
