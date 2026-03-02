@@ -116,7 +116,10 @@ class DesktopApp(QMainWindow):
         self.tabs.addTab(self.dashboard_tab, "📊 Dashboard")
         self.tabs.addTab(BookmakerTab(), "💰 Bookmakers")
         self.tabs.addTab(SelectorsTab(), "🧩 Selettori")
-        self.tabs.addTab(RobotsTab(self.logger, self.controller), "🤖 Robot & Strategie")
+        
+        # 🛡️ FIX: Istanziazione corretta del RobotsTab con il controller agganciato
+        self.robots_tab = RobotsTab(controller=self.controller)
+        self.tabs.addTab(self.robots_tab, "🤖 Robot & Strategie")
         
         # 🕵️ Aggiunta della Tab Anti-Detect
         self.anti_detect_tab = AntiDetectTab()
@@ -160,7 +163,6 @@ class DesktopApp(QMainWindow):
             self.controller.start_listening()
         else:
             self.controller.stop_listening()
-        # RIMOSSO: self.refresh_engine_state() -> Il decoupling esige che lo faccia solo il QTimer
 
     def refresh_engine_state(self):
         """UI Watchdog: La Source of Truth. Specchia la UI allo stato reale in RAM del backend."""
@@ -191,12 +193,10 @@ class DesktopApp(QMainWindow):
                 if telegram_alive:
                     self._set_btn_state("🟢 Sistema Operativo: IN ASCOLTO", "#2e7d32", "#1b5e20")
                 else:
-                    # Giallo/Arancio: Lavora ma è cieco ai segnali esterni
                     self._set_btn_state("🟠 IN ASCOLTO (ATTENZIONE: Telegram OFF)", "#f57c00", "#e65100")
             elif not running:
                 self._set_btn_state("🔴 Avvia Sistema", "#d32f2f", "#b71c1c")
             else:
-                # Caso anomalo: controller running ma worker morto
                 self._set_btn_state("⚠️ ERRORE: WORKER CRASHATO", "#616161", "#424242")
 
         except Exception as e:
