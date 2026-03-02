@@ -42,7 +42,7 @@ def main():
         watchdog = SystemWatchdog(executor=executor, logger=logger)
         parser = CommandParser(logger)
 
-        monitor.start()
+        # 🛡️ FIX: Rimossa la chiamata a monitor.start() inesistente
         watchdog.start()
 
         exit_code = run_app(
@@ -58,7 +58,7 @@ def main():
             controller.worker.stop()
         
         bus.stop()
-        monitor.stop()
+        # 🛡️ FIX: Rimossa la chiamata a monitor.stop() inesistente
         watchdog.stop()
         sys.exit(exit_code)
 
