@@ -1,166 +1,161 @@
-import sqlite3
+import logging
 from datetime import datetime
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, 
-                             QTableWidget, QTableWidgetItem, QPushButton, 
-                             QLabel, QHeaderView, QGroupBox)
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+                               QTableWidget, QTableWidgetItem, QHeaderView, QPushButton)
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QColor
 
 class HistoryTab(QWidget):
     def __init__(self, logger, controller):
         super().__init__()
         self.logger = logger
         self.controller = controller
-        self.db = controller.db
         
-        self.setup_ui()
-        self.refresh_data()
-        
-        # Auto-refresh ogni 5 secondi per monitoraggio in tempo reale
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.refresh_data)
-        self.timer.start(5000)
-
-    def setup_ui(self):
         layout = QVBoxLayout(self)
         
-        # --- TOP: STATISTICHE BANKROLL ---
-        top_layout = QHBoxLayout()
-        self.lbl_bankroll = QLabel("Bankroll: €0.00")
-        self.lbl_bankroll.setStyleSheet("font-size: 20px; font-weight: bold; color: #2ecc71;")
-        self.lbl_peak = QLabel("Picco Max: €0.00")
-        self.lbl_peak.setStyleSheet("font-size: 16px; font-weight: bold; color: #f1c40f;")
-        self.lbl_drawdown = QLabel("Drawdown: 0.00%")
-        self.lbl_drawdown.setStyleSheet("font-size: 16px; font-weight: bold; color: #e74c3c;")
+        # =========================================================
+        # 📊 DASHBOARD STATS (CRUSCOTTO SUPERIORE)
+        # =========================================================
+        stats_layout = QHBoxLayout()
+        self.lbl_balance = QLabel("💰 Saldo Attuale: € 0.00")
+        self.lbl_peak = QLabel("⛰️ Peak Balance: € 0.00")
+        self.lbl_profit = QLabel("📈 Profitto Netto: € 0.00")
+        self.lbl_pending = QLabel("⏳ In Corso: 0")
         
-        btn_refresh = QPushButton("🔄 Aggiorna Cruscotto")
-        btn_refresh.setStyleSheet("padding: 8px; font-weight: bold; background-color: #34495e; color: white;")
-        btn_refresh.clicked.connect(self.refresh_data)
-        
-        top_layout.addWidget(self.lbl_bankroll)
-        top_layout.addWidget(self.lbl_peak)
-        top_layout.addWidget(self.lbl_drawdown)
-        top_layout.addStretch()
-        top_layout.addWidget(btn_refresh)
-        
-        layout.addLayout(top_layout)
-        
-        # --- MIDDLE: I 5 TAVOLI ROSERPINA ---
-        tables_group = QGroupBox("🧠 Stato Tavoli Paralleli (Risk Engine)")
-        tables_layout = QHBoxLayout()
-        
-        self.lbl_tables = []
-        for i in range(5):
-            lbl = QLabel(f"Tavolo {i+1}\nInattivo")
+        for lbl in [self.lbl_balance, self.lbl_peak, self.lbl_profit, self.lbl_pending]:
+            lbl.setStyleSheet("font-size: 16px; font-weight: bold; background-color: #1e1e1e; padding: 12px; border-radius: 6px; border: 1px solid #333;")
             lbl.setAlignment(Qt.AlignCenter)
-            lbl.setStyleSheet("background-color: #2c3e50; color: white; padding: 10px; border-radius: 5px;")
-            tables_layout.addWidget(lbl)
-            self.lbl_tables.append(lbl)
+            stats_layout.addWidget(lbl)
             
-        tables_group.setLayout(tables_layout)
-        layout.addWidget(tables_group)
+        layout.addLayout(stats_layout)
+        layout.addSpacing(10)
         
-        # --- BOTTOM: CRONOLOGIA SCOMMESSE ---
-        history_group = QGroupBox("📜 Cronologia Operazioni (Ultime 100 transazioni)")
-        history_layout = QVBoxLayout()
-        
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Data", "Tavolo", "Stato", "Stake (€)", "Esito (€)", "TX ID"])
+        # =========================================================
+        # 🗃️ TABELLA TRANSAZIONI (LEDGER)
+        # =========================================================
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["ID TX", "Data", "Squadre", "Tavolo", "Stato", "Puntata (€)", "Vincita (€)", "Profitto (€)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setAlternatingRowColors(True)
+        self.table.setStyleSheet("""
+            QTableWidget { background-color: #121212; color: white; gridline-color: #333; border-radius: 5px; }
+            QHeaderView::section { background-color: #2c2c2c; color: #00ccff; font-weight: bold; padding: 5px; border: 1px solid #444; }
+        """)
+        layout.addWidget(self.table)
         
-        history_layout.addWidget(self.table)
-        history_group.setLayout(history_layout)
-        layout.addWidget(history_group)
-
+        # =========================================================
+        # 🔄 CONTROLLI E TIMER
+        # =========================================================
+        btn_layout = QHBoxLayout()
+        self.btn_refresh = QPushButton("🔄 Aggiorna Dati Database")
+        self.btn_refresh.setMinimumHeight(40)
+        self.btn_refresh.setStyleSheet("background-color: #1976d2; color: white; font-weight: bold; border-radius: 5px;")
+        self.btn_refresh.clicked.connect(self.refresh_data)
+        btn_layout.addWidget(self.btn_refresh)
+        layout.addLayout(btn_layout)
+        
+        # Auto-refresh ogni 2 secondi per tenere la UI reattiva senza sovraccaricare il DB
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh_data)
+        self.timer.start(2000)
+        
     def refresh_data(self):
+        """Motore di rendering del Cruscotto. Non crasherà mai più per colonne DB mancanti."""
+        if not self.controller or not hasattr(self.controller, 'db'):
+            return
+            
         try:
-            # 1. Aggiorna Bankroll Globale
-            bal, peak = self.db.get_balance()
-            drawdown = ((bal - peak) / peak * 100) if peak > 0 else 0.0
+            # 1. Lettura Saldi (Bilancio Corrente e Bilancio Massimo)
+            current_balance, peak_balance = self.controller.db.get_balance()
             
-            self.lbl_bankroll.setText(f"Bankroll: €{bal:.2f}")
-            self.lbl_peak.setText(f"Picco Max: €{peak:.2f}")
-            self.lbl_drawdown.setText(f"Drawdown: {drawdown:.2f}%")
-            
-            if drawdown < -10:
-                self.lbl_drawdown.setStyleSheet("font-size: 16px; font-weight: bold; color: #e74c3c;") # Rosso Allarme
-            else:
-                self.lbl_drawdown.setStyleSheet("font-size: 16px; font-weight: bold; color: #2ecc71;") # Verde Sicuro
-
-            # 2. Aggiorna Stato dei 5 Tavoli
-            tables = self.db.get_roserpina_tables()
-            active_pending = self.db.pending()
-            active_table_ids = [p.get("table_id") for p in active_pending]
-            
-            for i, t in enumerate(tables):
-                if i >= len(self.lbl_tables): break
-                t_id = t["table_id"]
-                profit = t["profit"]
-                loss = t["loss"]
-                in_rec = t["in_recovery"]
+            # 2. Lettura ultime transazioni (Lock per sicurezza in lettura)
+            with self.controller.db._lock:
+                # Usiamo try/except in caso il DB non sia ancora perfettamente inizializzato
+                try:
+                    rows = self.controller.db.conn.execute("SELECT * FROM journal ORDER BY id DESC LIMIT 100").fetchall()
+                except Exception:
+                    rows = []
                 
-                status_text = ""
-                bg_color = "#2c3e50" # Grigio Inattivo
-                
-                if t_id in active_table_ids:
-                    status_text = "🔄 OCCUPATO (Bet Aperta)"
-                    bg_color = "#2980b9" # Blu
-                elif in_rec == 1:
-                    status_text = "⚠️ IN RECOVERY"
-                    bg_color = "#d35400" # Arancione
-                else:
-                    status_text = "✅ LIBERO"
-                    bg_color = "#27ae60" # Verde
-                    
-                info = f"Tavolo {t_id}\n{status_text}\nProfitto: €{profit:.2f}\nLoss: €{loss:.2f}"
-                self.lbl_tables[i].setText(info)
-                self.lbl_tables[i].setStyleSheet(f"background-color: {bg_color}; color: white; padding: 15px; border-radius: 6px; font-weight: bold;")
-
-            # 3. Aggiorna Cronologia Scommesse
-            with self.db._lock:
-                cur = self.db.conn.execute("SELECT * FROM journal ORDER BY timestamp DESC LIMIT 100")
-                rows = cur.fetchall()
+            pending_count = 0
             
+            # Congela la tabella per aggiornarla senza sfarfallii grafici
+            self.table.setUpdatesEnabled(False)
             self.table.setRowCount(0)
-            for row_data in rows:
-                r = dict(row_data)
+            
+            for row in rows:
+                tx = dict(row)
+                
+                # 🛠️ LA PATCH: Calcolo sicuro dei valori finanziari 🛠️
+                amount = float(tx.get('amount', 0.0) or 0.0)
+                payout = float(tx.get('payout', 0.0) or 0.0)
+                status = str(tx.get('status', ''))
+                
+                # Calcolo Profitto (Al volo, non dal DB!)
+                if status == 'SETTLED':
+                    profitto = payout - amount
+                elif status == 'VOID':
+                    profitto = 0.0
+                else:
+                    profitto = 0.0
+                    pending_count += 1
+                    
+                # Inserimento riga
                 row_idx = self.table.rowCount()
                 self.table.insertRow(row_idx)
                 
-                # Formattazione Data
-                dt = datetime.fromtimestamp(r.get("timestamp", 0)).strftime('%d/%m/%Y %H:%M:%S')
+                # Formattazione Timestamp
+                ts = tx.get('timestamp', 0)
+                date_str = datetime.fromtimestamp(ts).strftime('%H:%M:%S | %d/%m') if ts else "N/A"
                 
-                # Calcolo Profitto Netto
-                payout = r.get("payout", 0.0)
-                amount = r.get("amount", 0.0)
-                status = r.get("status", "")
+                # Compilazione Colonne Base
+                self.table.setItem(row_idx, 0, QTableWidgetItem(str(tx.get('tx_id', ''))[:8] + "..."))
+                self.table.setItem(row_idx, 1, QTableWidgetItem(date_str))
+                self.table.setItem(row_idx, 2, QTableWidgetItem(str(tx.get('teams', ''))))
+                self.table.setItem(row_idx, 3, QTableWidgetItem(str(tx.get('table_id', '1'))))
                 
-                if status == 'SETTLED':
-                    if payout > 0:
-                        profit_netto = payout - amount
-                        esito_str = f"+€{profit_netto:.2f}"
-                        color = Qt.green
-                    else:
-                        esito_str = f"-€{amount:.2f}"
-                        color = Qt.red
-                elif status == 'VOID':
-                    esito_str = "RIMBORSATA"
-                    color = Qt.yellow
-                else:
-                    esito_str = "In Attesa ⏳"
-                    color = Qt.white
+                # Colonna Stato (Colorata)
+                item_status = QTableWidgetItem(status)
+                item_status.setFont(self.table.font())
+                if status == 'SETTLED': item_status.setForeground(QColor("#00ff00")) # Verde
+                elif status == 'VOID': item_status.setForeground(QColor("#aaaaaa")) # Grigio
+                elif status == 'RESERVED' or status == 'PLACED': item_status.setForeground(QColor("#ffb300")) # Arancio
+                self.table.setItem(row_idx, 4, item_status)
                 
-                # Inserimento in tabella
-                self.table.setItem(row_idx, 0, QTableWidgetItem(dt))
-                self.table.setItem(row_idx, 1, QTableWidgetItem(f"Tavolo {r.get('table_id', 1)}"))
-                self.table.setItem(row_idx, 2, QTableWidgetItem(status))
-                self.table.setItem(row_idx, 3, QTableWidgetItem(f"€{amount:.2f}"))
+                # Colonne Finanziarie
+                self.table.setItem(row_idx, 5, QTableWidgetItem(f"€ {amount:.2f}"))
+                self.table.setItem(row_idx, 6, QTableWidgetItem(f"€ {payout:.2f}"))
                 
-                item_esito = QTableWidgetItem(esito_str)
-                item_esito.setForeground(color)
-                self.table.setItem(row_idx, 4, item_esito)
+                # Colonna Profitto (Colorata Dinamicamente)
+                item_profit = QTableWidgetItem(f"€ {profitto:.2f}")
+                if profitto > 0:
+                    item_profit.setForeground(QColor("#00ff00"))
+                elif profitto < 0:
+                    item_profit.setForeground(QColor("#ff3333"))
+                self.table.setItem(row_idx, 7, item_profit)
                 
-                self.table.setItem(row_idx, 5, QTableWidgetItem(r.get("tx_id", "")[:8]))
-                
+                # Allinea tutte le celle al centro
+                for col in range(8):
+                    if self.table.item(row_idx, col):
+                        self.table.item(row_idx, col).setTextAlignment(Qt.AlignCenter)
+            
+            # Sblocca l'aggiornamento grafico
+            self.table.setUpdatesEnabled(True)
+            
+            # 3. Aggiornamento Label Cruscotto
+            self.lbl_balance.setText(f"💰 Saldo Attuale: € {current_balance:.2f}")
+            self.lbl_peak.setText(f"⛰️ Peak Balance: € {peak_balance:.2f}")
+            self.lbl_pending.setText(f"⏳ In Corso: {pending_count}")
+            
+            # Profitto Netto Totale (Saldo Attuale - Capitale Iniziale 1000)
+            net_profit = current_balance - 1000.0
+            self.lbl_profit.setText(f"📈 Profitto Netto: € {net_profit:.2f}")
+            
+            if net_profit >= 0:
+                self.lbl_profit.setStyleSheet("font-size: 16px; font-weight: bold; background-color: #1b5e20; padding: 12px; border-radius: 6px; border: 1px solid #00ff00;")
+            else:
+                self.lbl_profit.setStyleSheet("font-size: 16px; font-weight: bold; background-color: #b71c1c; padding: 12px; border-radius: 6px; border: 1px solid #ff0000;")
+
         except Exception as e:
-            self.logger.error(f"Errore aggiornamento cruscotto: {e}")
+            # Ripristina aggiornamenti grafici in caso di errore
+            self.table.setUpdatesEnabled(True)
+            self.logger.error(f"Errore aggiornamento cruscotto Risk Desk: {e}")
