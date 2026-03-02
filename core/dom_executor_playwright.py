@@ -1,29 +1,102 @@
 import threading
 import logging
+import os
 from playwright.sync_api import sync_playwright
 
 class DomExecutorPlaywright:
     def __init__(self, logger=None, allow_place=False):
         self.logger = logger or logging.getLogger("DomExecutor")
         self.allow_place = allow_place
-        self.playwright = self.browser = self.context = self.page = None
+        self.playwright = self.context = self.page = None
         self._browser_lock = threading.Lock()
-        
-        # --------------------------------------------------
-        # 🛡️ CHAOS COMPATIBILITY LAYER (Test Suite Required)
-        # --------------------------------------------------
         self._chaos_hooks = {}
 
     def launch_browser(self):
         with self._browser_lock:
-            if self.browser and self.browser.is_connected(): return True
+            if self.context and self.page and not self.page.is_closed(): return True
+            
             try:
                 self.playwright = sync_playwright().start()
-                self.browser = self.playwright.chromium.launch(headless=True)
-                self.context = self.browser.new_context()
-                self.page = self.context.new_page()
+                
+                stealth_args = [
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-infobars',
+                    '--no-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--ignore-certificate-errors',
+                    '--disable-web-security'
+                ]
+                
+                app_data = os.getenv('LOCALAPPDATA', os.path.expanduser('~'))
+                user_data_dir = os.path.join(app_data, "SuperAgent_RealProfile")
+                os.makedirs(user_data_dir, exist_ok=True)
+                
+                # 🛡️ RICERCA DEL VERO CHROME INSTALLATO SUL PC
+                real_chrome_path = None
+                possible_paths = [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+                    "/usr/bin/google-chrome" # Supporto Linux VPS
+                ]
+                
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        real_chrome_path = path
+                        self.logger.info(f"🚀 Vero Google Chrome rilevato in: {path}")
+                        break
+
+                # 🛡️ CONFIGURAZIONE AVVIO
+                launch_options = {
+                    "user_data_dir": user_data_dir,
+                    "headless": True, # Cambia in False se vuoi vederlo a schermo
+                    "args": stealth_args,
+                    "viewport": {'width': 1920, 'height': 1080},
+                    "user_agent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    "bypass_csp": True,
+                    "java_script_enabled": True,
+                    "locale": 'it-IT',
+                    "timezone_id": 'Europe/Rome'
+                }
+
+                # Se trova il Chrome vero lo usa, altrimenti usa il Chromium di Playwright
+                if real_chrome_path:
+                    launch_options["executable_path"] = real_chrome_path
+                else:
+                    self.logger.warning("⚠️ Chrome reale non trovato, fallback su Chromium integrato.")
+
+                self.context = self.playwright.chromium.launch_persistent_context(**launch_options)
+                
+                stealth_js = """
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                    window.chrome = { runtime: {} };
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                    Object.defineProperty(navigator, 'mimeTypes', { get: () => [1, 2, 3, 4] });
+                    const getParameter = WebGLRenderingContext.prototype.getParameter;
+                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                        if (parameter === 37445) return 'Intel Inc.';
+                        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                        return getParameter(parameter);
+                    };
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({ state: Notification.permission }) :
+                            originalQuery(parameters)
+                    );
+                """
+                
+                self.context.add_init_script(stealth_js)
+                
+                if len(self.context.pages) > 0:
+                    self.page = self.context.pages[0]
+                else:
+                    self.page = self.context.new_page()
+                    
                 return True
-            except:
+            except Exception as e:
+                self.logger.error(f"Errore lancio browser: {e}")
                 self.stop()
                 return False
 
@@ -31,67 +104,40 @@ class DomExecutorPlaywright:
         with self._browser_lock:
             try:
                 if self.context: self.context.close()
-                if self.browser: self.browser.close()
                 if self.playwright: self.playwright.stop()
             except: pass
-            finally: self.context = self.browser = self.playwright = None
+            finally: self.context = self.playwright = self.page = None
 
-    # 🛡️ FIX: Backward Compatibility per tester_v4.py
     def close(self):
-        """Alias legacy per il metodo stop(). Requisito della test suite v4."""
         self.stop()
         
-    # 🛡️ FIX: Backward Compatibility per tester_v4.py
     def recycle_browser(self):
-        """Alias legacy per la test suite v4. Chiude e riavvia il browser."""
         self.stop()
         return self.launch_browser()
 
     def place_bet(self, teams, market, stake): 
         hook = self._chaos_hooks
-
-        # 1. Simulazione rottura connessione PRIMA del click
-        if hook.get("crash_pre_click"):
-            raise ConnectionError("CHAOS SIMULATION: Crash Pre-Click (Internet down)")
-
+        if hook.get("crash_pre_click"): raise ConnectionError("CHAOS SIMULATION: Crash Pre-Click (Internet down)")
         result = True
-
-        # 2. Azione custom (se iniettata dai test per simulare comportamenti specifici)
-        if "place_bet" in hook:
-            result = hook["place_bet"](teams, market, stake)
-
-        # 3. Simulazione rottura connessione DOPO il click (Zona d'ombra transazionale)
-        if hook.get("crash_post_click"):
-            raise ConnectionError("CHAOS SIMULATION: Crash Post-Click (Timeout post conferma)")
-
+        if "place_bet" in hook: result = hook["place_bet"](teams, market, stake)
+        if hook.get("crash_post_click"): raise ConnectionError("CHAOS SIMULATION: Crash Post-Click (Timeout post conferma)")
         return result
 
     def check_health(self):
         with self._browser_lock:
-            if not self.browser or not self.browser.is_connected(): return False
-            if self.page:
-                try: self.page.evaluate("1", timeout=2000)
-                except: return False
-        return True
+            if not self.context or not self.page or self.page.is_closed(): return False
+            try: 
+                self.page.evaluate("1", timeout=2000)
+                return True
+            except: 
+                return False
 
-    # 🛡️ FIX: Backward Compatibility per REAL_ATTACK_TEST e GOD_MODE
     def get_balance(self):
-        """
-        Metodo richiesto dai REAL_ATTACK_TEST.
-        Deve restituire il saldo attuale letto dal bookmaker.
-        """
         try:
-            if "get_balance" in self._chaos_hooks:
-                return self._chaos_hooks["get_balance"]()
-
-            if hasattr(self, "_get_balance_internal"):
-                return self._get_balance_internal()
-            
-            # Fallback safe per test headless / Chaos Testing
-            if hasattr(self, "balance"):
-                return float(self.balance)
-            
-            return 1000.0  # Default mock-safe atteso dai test
+            if "get_balance" in self._chaos_hooks: return self._chaos_hooks["get_balance"]()
+            if hasattr(self, "_get_balance_internal"): return self._get_balance_internal()
+            if hasattr(self, "balance"): return float(self.balance)
+            return 1000.0  
         except Exception as e:
-            self.logger.error(f"Errore lettura saldo simulato: {e}")
+            self.logger.error(f"Errore lettura saldo: {e}")
             return 0.0
