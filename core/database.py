@@ -47,6 +47,21 @@ class Database:
                     )
                 """)
                 self.conn.execute("INSERT OR IGNORE INTO balance (id, current_balance, peak_balance) VALUES (1, 1000.0, 1000.0)")
+                
+                # 🛡️ FIX: Aggiunta tabella per Roserpina
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS roserpina_tables (
+                        table_id INTEGER PRIMARY KEY,
+                        loss REAL DEFAULT 0,
+                        in_recovery INTEGER DEFAULT 0,
+                        current_stake REAL DEFAULT 0,
+                        status TEXT DEFAULT 'IDLE'
+                    )
+                """)
+                # Inizializza 10 tavoli
+                for i in range(1, 11):
+                    self.conn.execute("INSERT OR IGNORE INTO roserpina_tables (table_id) VALUES (?)", (i,))
+
                 self.conn.execute("""
                     CREATE TRIGGER IF NOT EXISTS enforce_peak_monotonic
                     BEFORE UPDATE ON balance
@@ -62,12 +77,15 @@ class Database:
             row = self.conn.execute("SELECT current_balance, peak_balance FROM balance WHERE id = 1").fetchone()
             return (float(row["current_balance"]), float(row["peak_balance"])) if row else (0.0, 0.0)
 
-    # 🛡️ FIX 2: Metodo legacy reintrodotto con Hard Constraints C-Level
+    # 🛡️ FIX: Metodo di lettura sicuro per il Cruscotto UI (previene gli errori a schermo)
+    def get_roserpina_tables(self):
+        with self._lock:
+            try:
+                return [dict(r) for r in self.conn.execute("SELECT * FROM roserpina_tables").fetchall()]
+            except sqlite3.OperationalError:
+                return []
+
     def update_bankroll(self, current_balance, peak_balance):
-        """
-        Metodo legacy richiesto dagli ULTRA test.
-        Aggiorna saldo in modo transazionale rispettando gli invarianti.
-        """
         with self._write_lock:
             with self._lock:
                 self.conn.execute("BEGIN IMMEDIATE")
