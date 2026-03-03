@@ -1,108 +1,114 @@
 import json
-import os
-import requests
 import logging
-import time
+import re
+import requests
 
-DEFAULT_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-class AISignalParser:
-    def __init__(self, api_key=None):
-        self.logger = logging.getLogger("SuperAgent")
+class AIParser:
+    def __init__(self, api_key=None, logger=None):
+        self.logger = logger or logging.getLogger("AIParser")
         self.api_key = api_key
-        self.model = "google/gemini-2.0-flash-001"
-        self.api_url = os.environ.get("OPENROUTER_API_URL", DEFAULT_API_URL)
+        # Endpoint standard per OpenRouter (usato in ui/roserpina_tab.py)
+        self.api_url = "https://openrouter.ai/api/v1/chat/completions"
+        self.model = "meta-llama/llama-3-70b-instruct"
 
-    def parse(self, telegram_text):
-        if not telegram_text or len(telegram_text) < 5:
-            return {}
-
-        if not self.api_key:
-            self.logger.warning("⚠️ AI PARSER: API key missing (Vault).")
-            return {}
-
-        system_instructions = """
-        You are an algorithmic betting parser.
-        RULES:
-        1. Extract teams (e.g. "Team A - Team B").
-        2. Extract score (e.g. "6 - 0").
-        3. Calculate Market: Sum of scores + 0.5 (e.g. 6+0=6 -> "Over 6.5").
-        OUTPUT JSON: {"teams": "...", "market": "Over X.5", "score_detected": "X-Y"}
+    def parse_signal(self, raw_text):
         """
-        for attempt in range(3):
-            try:
-                response = requests.post(
-                    url=self.api_url,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": "http://localhost:8000",
-                        "X-Title": "SuperAgentBot"
-                    },
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": system_instructions},
-                            {"role": "user", "content": telegram_text}
-                        ],
-                        "temperature": 0.1
-                    },
-                    timeout=(5, 10)
-                )
+        Elabora il segnale di Telegram tramite OpenRouter e blinda l'output JSON.
+        Restituisce un dizionario pronto per essere passato a Playwright e ai Robot.
+        """
+        self.logger.info(f"🧠 Richiesta analisi AI in corso per: '{raw_text}'")
+        
+        ai_response = self._call_openrouter(raw_text)
+        if not ai_response:
+            return None
+            
+        return self._extract_and_validate_json(ai_response)
 
-                if response.status_code == 200:
-                    raw = response.json()['choices'][0]['message']['content']
-                    
-                    # 🛡️ 10/10 GOD MODE PARSING: True Bracket Counter O(n)
-                    clean = None
-                    in_string = False
-                    escape_char = False
-                    bracket_count = 0
-                    start_idx = -1
+    def _call_openrouter(self, user_text):
+        """Chiama l'API di OpenRouter costringendo il modello a restituire un JSON."""
+        if not self.api_key:
+            self.logger.warning("⚠️ API Key OpenRouter mancante. Avvio simulazione (Mock) per test.")
+            return '{"teams": "Juventus", "market": "1", "stake": 10}'
+            
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "HTTP-Referer": "https://dom21.local", 
+            "X-Title": "Dom21 Bot",
+            "Content-Type": "application/json"
+        }
+        
+        # PROMPT INGEGNERIZZATO: Impediamo all'AI di essere discorsiva
+        system_prompt = (
+            "Sei un estrattore dati per scommesse sportive. Il tuo unico scopo è estrarre "
+            "le squadre, il mercato e la puntata dal testo fornito. "
+            "RISPONDI ESCLUSIVAMENTE CON UN JSON VALIDO. Non aggiungere nessun commento. "
+            "Usa esattamente questa struttura: {\"teams\": \"Squadra A - Squadra B\", \"market\": \"1\", \"stake\": 10}"
+        )
+        
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text}
+            ],
+            # Parametri per limitare la "fantasia" dell'AI al minimo
+            "temperature": 0.1, 
+            "max_tokens": 150
+        }
+        
+        try:
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=15)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            self.logger.error(f"❌ Errore di comunicazione con OpenRouter: {e}")
+            return None
 
-                    for i, char in enumerate(raw):
-                        if char == '"' and not escape_char:
-                            in_string = not in_string
-                        
-                        if not in_string:
-                            if char == '{':
-                                if bracket_count == 0:
-                                    start_idx = i
-                                bracket_count += 1
-                            elif char == '}':
-                                if bracket_count > 0:
-                                    bracket_count -= 1
-                                    if bracket_count == 0 and start_idx != -1:
-                                        clean = raw[start_idx:i+1]
-                                        break  # Primo JSON root isolato con successo
-                                        
-                        escape_char = (char == '\\' and not escape_char)
-                    
-                    if not clean:
-                        self.logger.error("❌ AI error: Nessun oggetto JSON valido estratto (Bracket Counter fallito).")
-                        continue
-                        
-                    try:
-                        data = json.loads(clean)
-                        self.logger.info(f"✅ AI OUTPUT: {data}")
-                        return data
-                    except json.JSONDecodeError as e:
-                        self.logger.error(f"❌ AI JSON Parse error: {e} su stringa: {clean}")
-                        continue
-
-                elif response.status_code == 429:
-                    self.logger.warning(f"⚠️ Rate limit. Retry {attempt + 1}/3...")
-                    time.sleep(2 ** (attempt + 1))
-                    continue
-                else:
-                    self.logger.error(f"❌ AI error: {response.status_code}")
-                    break
-
-            except requests.exceptions.Timeout:
-                self.logger.warning(f"⏱️ AI timeout (attempt {attempt + 1}/3)")
-                time.sleep(1)
-            except Exception as e:
-                self.logger.error(f"❌ AI exception (attempt {attempt + 1}/3): {e}")
-                time.sleep(1)
-
-        return {}
+    def _extract_and_validate_json(self, ai_response_text):
+        """
+        Filtro di Sicurezza: Pulisce la risposta da eventuali markdown o allucinazioni testuali
+        ed estrae i dati in modo matematico.
+        """
+        try:
+            # 1. Pulisce la stringa da eventuali formattazioni markdown come ```json ... ```
+            clean_text = ai_response_text.strip()
+            if clean_text.startswith("```json"):
+                clean_text = clean_text.replace("```json", "", 1)
+            if clean_text.endswith("```"):
+                clean_text = clean_text[:-3]
+                
+            # 2. Cattura tutto ciò che c'è tra parentesi graffe tramite Regex
+            json_match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+            if not json_match:
+                self.logger.error("❌ Formato JSON non rilevato nel testo dell'AI.")
+                return None
+                
+            json_str = json_match.group(0)
+            
+            # 3. Tenta il parsing del JSON stringa in dizionario Python
+            parsed_data = json.loads(json_str)
+            
+            # 4. Validazione Strutturale (I campi vitali per il DomExecutor Playwright)
+            required_keys = ["teams", "market", "stake"]
+            for key in required_keys:
+                if key not in parsed_data:
+                    self.logger.error(f"❌ JSON Invalido: Manca la chiave obbligatoria '{key}'")
+                    return None
+            
+            # 5. Type Casting Sicuro (evita che lo stake arrivi come stringa mandando in crash la schedina)
+            parsed_data["stake"] = float(parsed_data["stake"])
+            parsed_data["teams"] = str(parsed_data["teams"]).strip()
+            parsed_data["market"] = str(parsed_data["market"]).strip()
+            
+            self.logger.info(f"✅ Dati AI Filtrati e Validati: {parsed_data}")
+            return parsed_data
+            
+        except json.JSONDecodeError as e:
+            self.logger.error(f"❌ L'AI ha restituito un JSON corrotto: {e}\nTesto originale: {ai_response_text}")
+            return None
+        except ValueError as e:
+            self.logger.error(f"❌ Errore di tipo (es. Stake non convertibile in numero): {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"❌ Errore Critico nel filtro AI Parser: {e}")
+            return None
