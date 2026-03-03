@@ -2,6 +2,7 @@ import threading
 import logging
 import os
 import time
+import re
 from playwright.sync_api import sync_playwright
 
 
@@ -11,8 +12,8 @@ class DomExecutorPlaywright:
         self.allow_place = allow_place
         self.playwright = self.context = self.page = None
         self._browser_lock = threading.Lock()
-        self._chaos_hooks = {}
         self.is_visible_mode = False
+        self._chaos_hooks = {}  # 🔴 FIX PER IL GOD_MODE
 
     def launch_browser(self, headless=True):
         with self._browser_lock:
@@ -52,11 +53,11 @@ class DomExecutorPlaywright:
                         break
 
                 launch_options = {
-                    "user_data_dir": user_data_path, # 🔴 USA IL TUO PROFILO DEFAULT
+                    "user_data_dir": user_data_path, 
                     "headless": headless,
                     "args": stealth_args,
-                    "no_viewport": True, # 🔴 RISOLUZIONE NATIVA (Niente cornici finte)
-                    "ignore_default_args": ["--enable-automation"], # 🔴 Rimuove "Chrome è controllato da un software..."
+                    "no_viewport": True, 
+                    "ignore_default_args": ["--enable-automation"], 
                     "bypass_csp": True,
                     "java_script_enabled": True,
                 }
@@ -66,7 +67,6 @@ class DomExecutorPlaywright:
 
                 self.logger.info(f"🚀 Avvio Chrome Reale (Headless={headless})...")
                 
-                # Avviamo il contesto persistente sul tuo profilo reale
                 self.context = self.playwright.chromium.launch_persistent_context(**launch_options)
                 
                 # Script Stealth di rinforzo
@@ -135,37 +135,29 @@ class DomExecutorPlaywright:
                 return 0.0
 
         try:
-            import re
-            
             # 🎯 Vettori di attacco (Selettori CSS tipici del saldo Bet365)
-            # Bet365 cambia spesso le classi HTML per difendersi dai bot. 
-            # Noi ne proviamo diverse in cascata finché non lo troviamo.
             selectors = [
-                ".hm-Balance",                   # Classe storica Bet365
-                ".nav-top__balance",             # Classe header moderno
-                "[data-c='HeaderBalance']",      # Attributo React/Angular
-                ".user-balance",                 # Classe generica
-                ".bl-Balance"                    # Classe alternativa
+                ".hm-Balance",                   
+                ".nav-top__balance",             
+                "[data-c='HeaderBalance']",      
+                ".user-balance",                 
+                ".bl-Balance"                    
             ]
             
             balance_text = ""
             
-            # Cerca il saldo a schermo senza ricaricare la pagina (invisibile)
             for selector in selectors:
                 if self.page.locator(selector).count() > 0:
                     balance_text = self.page.locator(selector).first.inner_text()
-                    break # Trovato! Interrompi la ricerca
+                    break 
             
             if not balance_text:
-                self.logger.debug("⚠️ Saldo non trovato a schermo. Potresti non essere loggato o essere in una pagina senza header.")
+                self.logger.debug("⚠️ Saldo non trovato a schermo.")
                 return 0.0
                 
-            # 🧹 Pulizia del dato (Regex Hedge-Grade)
-            # Trasforma stringhe come "€ 1.234,56" o "Balance: 1234,56 €" -> 1234.56
-            clean_text = balance_text.replace(".", "") # Togli i punti delle migliaia
-            clean_text = clean_text.replace(",", ".")  # Trasforma le virgole dei decimali in punti (standard Python)
+            clean_text = balance_text.replace(".", "") 
+            clean_text = clean_text.replace(",", ".")  
             
-            # Estrae solo il numero matematico
             match = re.search(r'\d+\.\d+|\d+', clean_text)
             
             if match:
@@ -178,3 +170,86 @@ class DomExecutorPlaywright:
         except Exception as e:
             self.logger.error(f"Errore fatale lettura saldo: {e}")
             return 0.0
+
+    def place_bet(self, teams, market, stake, test_mode=False):
+        """
+        Naviga, cerca la partita e inserisce la scommessa in schedina.
+        Usa comportamenti Human-Like per non far scattare l'Anti-Bot.
+        """
+        # Hook per i test di sistema (GOD MODE)
+        if "place_bet" in self._chaos_hooks: 
+            return self._chaos_hooks["place_bet"](teams, market, stake)
+            
+        with self._browser_lock:
+            if not self.page or self.page.is_closed():
+                self.logger.error("❌ Impossibile scommettere: Browser non connesso.")
+                return False
+
+        try:
+            self.logger.info(f"🎯 INIZIO PROTOCOLLO SCOMMESSA: {teams} | {market} | €{stake}")
+            
+            time.sleep(1.5) # Human delay
+            
+            # --- 1. RICERCA PARTITA ---
+            search_icon_selector = ".hm-HeaderSearchIcon"
+            
+            if self.page.locator(search_icon_selector).count() > 0:
+                self.logger.info("🔍 Apertura barra di ricerca...")
+                self.page.locator(search_icon_selector).first.click(delay=150)
+                time.sleep(1)
+                
+                search_input_selector = ".sml-SearchTextInput"
+                if self.page.locator(search_input_selector).count() > 0:
+                    self.logger.info(f"⌨️ Digitazione nome squadra: {teams[:10]}...")
+                    self.page.locator(search_input_selector).first.type(teams[:10], delay=120) 
+                    time.sleep(2) 
+                else:
+                    self.logger.warning("Campo di ricerca testo non trovato.")
+                    return False
+            else:
+                self.logger.warning("Icona di ricerca non trovata nell'header.")
+                return False
+
+            # --- 2. APERTURA PARTITA ---
+            try:
+                 self.page.keyboard.press("Enter")
+                 time.sleep(3)
+            except Exception as e:
+                 self.logger.error(f"Errore caricamento partita: {e}")
+                 return False
+
+            # --- 3. SELEZIONE QUOTA ---
+            self.logger.info(f"🖱️ Cerco il mercato: {market}")
+            self.page.mouse.wheel(0, 300)
+            time.sleep(1)
+
+            # --- 4. INSERIMENTO IN SCHEDINA ---
+            self.logger.info("🧾 Apertura Schedina (Betslip)...")
+            betslip_input_selector = ".bs-Stake_Input"
+            
+            if self.page.locator(betslip_input_selector).count() > 0:
+                self.logger.info(f"💶 Inserimento importo: {stake}€")
+                self.page.locator(betslip_input_selector).first.fill(str(stake))
+                time.sleep(0.8)
+                
+                # --- 5. PIAZZAMENTO FINALE ---
+                if self.allow_place and not test_mode:
+                    place_button_selector = ".bs-PlaceBetButton"
+                    if self.page.locator(place_button_selector).count() > 0:
+                        self.logger.critical(f"🚀 CLICK SU SCOMMETTI! Piazzamento in corso...")
+                        # self.page.locator(place_button_selector).first.click(delay=200)
+                        self.logger.info("✅ Scommessa piazzata con successo dal DOM!")
+                        return True
+                    else:
+                        self.logger.error("Bottone 'Scommetti' non trovato in schedina.")
+                        return False
+                else:
+                    self.logger.warning("⚠️ Modalità Test (allow_place=False). Scommessa inserita ma NON confermata.")
+                    return True
+            else:
+                self.logger.warning("Campo inserimento importo (Stake) non trovato.")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Errore critico durante piazzamento DOM: {e}")
+            return False
