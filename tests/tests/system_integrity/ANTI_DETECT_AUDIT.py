@@ -36,22 +36,67 @@ async def run_audit():
     async with async_playwright() as p:
         print("🚀 Avvio motore Chromium Stealth (Headless/Cloud)...")
         
-        browser = await p.chromium.launch(
-            headless=True,
-            args=AntiDetect.get_browser_args()
-        )
+        # -------------------------------------------------------------
+        # PATCH HEDGE-GRADE: USA LO STESSO PROFILO DEL BOT REALE
+        # -------------------------------------------------------------
+        app_data = os.getenv('LOCALAPPDATA', os.path.expanduser('~'))
+        user_data_dir = os.path.join(app_data, "SuperAgent_RealProfile")
         
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080},
-            device_scale_factor=1,
-            has_touch=False,
-            is_mobile=False
-        )
+        real_chrome_path = None
+        for path in [r"C:\Program Files\Google\Chrome\Application\chrome.exe", 
+                     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe", 
+                     os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")]:
+            if os.path.exists(path):
+                real_chrome_path = path
+                break
 
+        stealth_args = [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-infobars',
+            '--no-sandbox',
+            '--disable-gpu',
+            '--ignore-certificate-errors',
+            '--disable-web-security'
+        ]
+
+        launch_options = {
+            "user_data_dir": user_data_dir,
+            "headless": False, # Modalità visibile per guardare il test
+            "args": stealth_args,
+            "viewport": {'width': 1920, 'height': 1080},
+            "user_agent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            "bypass_csp": True,
+            "java_script_enabled": True
+        }
+
+        if real_chrome_path:
+            launch_options["executable_path"] = real_chrome_path
+
+        # Avvia il contesto PERSISTENTE (non in Incognito!)
+        context = await p.chromium.launch_persistent_context(**launch_options)
+        
         print("💉 Iniezione Payload STEALTH_V5 (Hardware GPU Spoofing + CDP Bypass)...")
-        await AntiDetect.apply_stealth(context)
-        page = await context.new_page()
+        
+        # L'init_script va aggiunto al context persistente
+        stealth_js = """
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'mimeTypes', { get: () => [1, 2, 3, 4] });
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) return 'Intel Inc.';
+                if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                return getParameter(parameter);
+            };
+        """
+        await context.add_init_script(stealth_js)
+        
+        # Nel context persistente, usa la prima pagina aperta se esiste, altrimenti creane una nuova
+        if len(context.pages) > 0:
+            page = context.pages[0]
+        else:
+            page = await context.new_page()
 
         # ==========================================
         # ESECUZIONE TEST
@@ -102,7 +147,7 @@ async def run_audit():
             print(f"⚠️ Errore CreepJS: {e}")
             failures += 1
 
-        await browser.close()
+        await context.close()
 
     print("\n========================")
     # Su GitHub non blocchiamo la build se questi test avanzati falliscono senza proxy,
