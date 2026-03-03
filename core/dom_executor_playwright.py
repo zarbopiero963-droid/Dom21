@@ -13,6 +13,38 @@ class DomExecutorPlaywright:
         self._browser_lock = threading.Lock()
         self.is_visible_mode = False
         self._chaos_hooks = {}  # Fondamentale per il GOD_MODE_V2_chaos.py
+        
+        # 🔗 COLLEGAMENTO ALLA UI: Caricamento dinamico dei selettori
+        # Calcola il percorso esatto della cartella 'config' partendo dalla root del progetto
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.selectors_file = os.path.join(base_dir, 'config', 'selectors.yaml.txt')
+        self.selectors = self._load_dynamic_selectors()
+
+    def _load_dynamic_selectors(self):
+        """Legge i selettori dal database YAML della UI, con fallback di sicurezza."""
+        defaults = {
+            "search_icon": ".hm-HeaderSearchIcon",
+            "search_input": ".sml-SearchTextInput",
+            "betslip_input": ".bs-Stake_Input",
+            "place_button": ".bs-PlaceBetButton",
+            "balance": ".hm-Balance, .nav-top__balance, [data-c='HeaderBalance'], .user-balance, .bl-Balance",
+            "receipt": ".bs-ReceiptMessage, .bs-ReceiptContent, .bs-Receipt"
+        }
+        try:
+            if os.path.exists(self.selectors_file):
+                import yaml
+                with open(self.selectors_file, 'r', encoding='utf-8') as f:
+                    loaded_selectors = yaml.safe_load(f)
+                    if loaded_selectors and isinstance(loaded_selectors, dict):
+                        for key, value in loaded_selectors.items():
+                            defaults[key] = value
+                self.logger.debug("✅ Selettori dinamici caricati dalla UI.")
+        except ImportError:
+            self.logger.warning("Libreria 'yaml' non trovata. Uso i selettori di default. (Installa con: pip install pyyaml)")
+        except Exception as e:
+            self.logger.error(f"⚠️ Errore lettura config/selectors.yaml.txt: {e}. Uso i default.")
+            
+        return defaults
 
     def launch_browser(self, headless=True):
         """Avvia Chrome con profilo reale e protezioni Stealth."""
@@ -131,11 +163,14 @@ class DomExecutorPlaywright:
             except: return False
 
     def get_balance(self):
-        """Legge il saldo reale dal DOM."""
+        """Legge il saldo reale dal DOM, usando i selettori dinamici."""
         with self._browser_lock:
             if not self.page or self.page.is_closed(): return 0.0
         try:
-            selectors = [".hm-Balance", ".nav-top__balance", "[data-c='HeaderBalance']"]
+            # 🎯 Prende l'elenco dei selettori dalla UI (separati da virgola)
+            balance_selectors_str = self.selectors.get("balance", ".hm-Balance")
+            selectors = [s.strip() for s in balance_selectors_str.split(',')]
+            
             for s in selectors:
                 if self.page.locator(s).count() > 0:
                     txt = self.page.locator(s).first.inner_text()
@@ -145,7 +180,10 @@ class DomExecutorPlaywright:
         except: return 0.0
 
     def place_bet(self, teams, market, stake, test_mode=False):
-        """Protocollo di scommessa reale End-to-End."""
+        """Protocollo di scommessa reale End-to-End con selettori dinamici."""
+        # 🔄 Aggiorna i selettori ad ogni scommessa (nel caso tu li abbia appena cambiati dalla UI)
+        self.selectors = self._load_dynamic_selectors()
+        
         if "place_bet" in self._chaos_hooks: 
             return self._chaos_hooks["place_bet"](teams, market, stake)
             
@@ -159,12 +197,14 @@ class DomExecutorPlaywright:
             time.sleep(1.5)
             
             # --- 1. RICERCA PARTITA ---
-            search_icon_selector = ".hm-HeaderSearchIcon"
+            # 🎯 Usa la chiave salvata dalla UI
+            search_icon_selector = self.selectors.get("search_icon", ".hm-HeaderSearchIcon")
             if self.page.locator(search_icon_selector).count() > 0:
                 self.page.locator(search_icon_selector).first.click(delay=150)
                 time.sleep(1)
                 
-                search_input_selector = ".sml-SearchTextInput"
+                # 🎯 Usa la chiave salvata dalla UI
+                search_input_selector = self.selectors.get("search_input", ".sml-SearchTextInput")
                 if self.page.locator(search_input_selector).count() > 0:
                     self.logger.info(f"⌨️ Digitazione squadra: {teams[:15]}")
                     self.page.locator(search_input_selector).first.type(teams[:15], delay=120) 
@@ -186,11 +226,10 @@ class DomExecutorPlaywright:
 
             # --- 3. SELEZIONE QUOTA/MERCATO ---
             self.logger.info(f"🖱️ Ricerca della quota a schermo: '{market}'...")
-            self.page.mouse.wheel(0, 400) # Scrolla giù per caricare i mercati
+            self.page.mouse.wheel(0, 400) 
             time.sleep(1.5)
 
             try:
-                # Cerca l'elemento che contiene il testo esatto del mercato/quota
                 market_locator = self.page.get_by_text(market, exact=True).first
                 if market_locator.count() > 0:
                     market_locator.click(delay=150)
@@ -205,28 +244,29 @@ class DomExecutorPlaywright:
 
             # --- 4. COMPILAZIONE SCHEDINA ---
             self.logger.info("🧾 Apertura Schedina in corso...")
-            betslip_input_selector = ".bs-Stake_Input"
+            # 🎯 Usa la chiave salvata dalla UI
+            betslip_input_selector = self.selectors.get("betslip_input", ".bs-Stake_Input")
             if self.page.locator(betslip_input_selector).count() > 0:
                 self.page.locator(betslip_input_selector).first.fill(str(stake))
                 time.sleep(0.8)
                 
                 # --- 5. PIAZZAMENTO E VERIFICA RICEVUTA ---
                 if self.allow_place and not test_mode:
-                    place_button_selector = ".bs-PlaceBetButton"
+                    # 🎯 Usa la chiave salvata dalla UI
+                    place_button_selector = self.selectors.get("place_button", ".bs-PlaceBetButton")
                     if self.page.locator(place_button_selector).count() > 0:
                         self.logger.critical(f"🚀 PREMUTO TASTO SCOMMETTI! Attesa conferma dal Bookmaker...")
                         self.page.locator(place_button_selector).first.click(delay=200)
                         
-                        # VERIFICA REALE: Attendiamo la ricevuta di Bet365
                         try:
-                            # Classi tipiche del messaggio "Scommessa Piazzata" di Bet365
-                            receipt_selector = ".bs-ReceiptMessage, .bs-ReceiptContent, .bs-Receipt"
+                            # 🎯 Usa la chiave salvata dalla UI
+                            receipt_selector = self.selectors.get("receipt", ".bs-ReceiptMessage, .bs-Receipt")
                             self.page.wait_for_selector(receipt_selector, timeout=6000)
                             self.logger.info("✅💰 SCOMMESSA CONFERMATA DAL BOOKMAKER!")
                             return True
                         except:
                             self.logger.error("⚠️ Scommessa cliccata, ma nessuna ricevuta confermata a schermo. Verificare saldo.")
-                            return False # Ritorna False per far scattare l'alert di sicurezza dell'engine
+                            return False 
                     else:
                         self.logger.error("❌ Bottone 'Scommetti' non trovato nella schedina.")
                         return False
