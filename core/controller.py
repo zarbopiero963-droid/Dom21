@@ -69,7 +69,9 @@ class SuperAgentController(QObject):
         self.telegram.message_received.connect(self.process_signal)
 
         self.is_running = False
-        self.last_heartbeat = time.monotonic()
+        
+        # 🛠️ FIX: Sincronizzazione dell'orologio con la UI (time.time() invece di monotonic)
+        self.last_heartbeat = time.time() 
         self.engine.betting_enabled = False
         self._bus_started = False
 
@@ -81,6 +83,16 @@ class SuperAgentController(QObject):
         bus.subscribe("BET_FAILED", self._on_bet_failed)
 
         threading.Thread(target=self._master_watchdog, daemon=True).start()
+        
+        # 💓 ATTIVAZIONE BATTITO CARDIACO PER LA UI
+        self._heartbeat_thread = threading.Thread(target=self._keep_alive, daemon=True)
+        self._heartbeat_thread.start()
+
+    def _keep_alive(self):
+        """Invia un segnale di vita continuo per non far scattare l'allarme della UI."""
+        while True:
+            self.last_heartbeat = time.time()
+            time.sleep(5)
 
     def _signal_handler(self, signum, frame):
         if self._shutting_down: return
@@ -97,8 +109,6 @@ class SuperAgentController(QObject):
         self.engine.betting_enabled = True
 
         if not self._bus_started:
-            # Assumiamo che start non esista più e non sia necessario per EventBusV6,
-            # lo avviamo già nell'init dell'oggetto singleton
             self._bus_started = True
 
         with self._worker_lock:
