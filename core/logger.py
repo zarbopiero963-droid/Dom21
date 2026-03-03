@@ -2,73 +2,71 @@ import logging
 import os
 import sys
 from logging.handlers import RotatingFileHandler
-from PySide6.QtCore import QObject, Signal
 
-# 🔴 IMPORTA IL FILTRO SEGRETI
-from core.security_logger import SecretFilter
-
-LOG_DIR = "logs"
-LOG_FILE = "superagent.log"
-MAX_BYTES = 5 * 1024 * 1024
-BACKUP_COUNT = 3
-
-class LogSignaler(QObject):
-    log_signal = Signal(str, str)
-
-class QtLogHandler(logging.Handler):
-    def __init__(self):
+class GUILogHandler(logging.Handler):
+    """
+    Il 'Ponte'. Intercetta i log di sistema e li spara in tempo reale
+    alla funzione della UI (la Tab 10) tramite una callback.
+    """
+    def __init__(self, callback):
         super().__init__()
-        self.signaler = LogSignaler()
+        self.callback = callback
 
     def emit(self, record):
-        try:
-            msg = self.format(record)
+        # Formatta il messaggio
+        msg = self.format(record)
+        if self.callback:
             try:
-                self.signaler.log_signal.emit(record.levelname, msg)
-            except RuntimeError:
+                self.callback(msg)
+            except Exception:
                 pass
-        except Exception:
-            self.handleError(record)
 
-def setup_logger():
-    if getattr(sys, 'frozen', False):
-        base_dir = os.path.dirname(sys.executable)
-    else:
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+def setup_global_logger(ui_callback=None):
+    """
+    Inizializza la Scatola Nera. Cattura TUTTO ciò che accade nel programma.
+    """
+    # Prende il logger "root" (il padre di tutti i logger nel programma)
+    logger = logging.getLogger()
     
-    log_path = os.path.join(base_dir, LOG_DIR)
-    os.makedirs(log_path, exist_ok=True)
-    full_path = os.path.join(log_path, LOG_FILE)
-
-    logger = logging.getLogger("SuperAgent")
-    logger.setLevel(logging.INFO)
-    logger.propagate = False 
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.CRITICAL) 
-    
-    # 🔴 APPLICA LA BLINDATURA GLOBALE
-    if not any(isinstance(f, SecretFilter) for f in root_logger.filters):
-        root_logger.addFilter(SecretFilter())
-        
-    if not any(isinstance(f, SecretFilter) for f in logger.filters):
-        logger.addFilter(SecretFilter())
-    
+    # Rimuove eventuali vecchi handler per evitare messaggi duplicati
     if logger.hasHandlers():
         logger.handlers.clear()
+        
+    # LIVELLO DEBUG: Cattura anche il battito d'ali di una mosca
+    logger.setLevel(logging.DEBUG) 
 
-    formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S')
+    # Formattazione Hacker-Style: Data | Ora | Livello | Modulo | Messaggio
+    log_format = '%(asctime)s | %(levelname)-8s | [%(module)s] %(message)s'
+    formatter = logging.Formatter(log_format, datefmt='%Y-%m-%d %H:%M:%S')
 
-    try:
-        file_handler = RotatingFileHandler(full_path, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding='utf-8')
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except Exception as e:
-        print(f"ERRORE CRITICO LOGGER: {e}")
+    # 1. FILE LOGGER (La vera scatola nera su disco)
+    # Crea la cartella 'logs' nella root del progetto se non esiste
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_dir = os.path.join(base_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, 'superagent_master.log'),
+        maxBytes=10*1024*1024, # File da max 10 MB
+        backupCount=5,         # Tiene gli ultimi 5 file di log
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.DEBUG) # Su file scriviamo TUTTO
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
-    qt_handler = QtLogHandler()
-    qt_handler.setFormatter(formatter)
-    logger.addHandler(qt_handler)
+    # 2. CONSOLE LOGGER (Per chi guarda il terminale CMD)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO) # Sul terminale mostriamo solo INFO
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
-    logger.info("=== 🚀 SISTEMA DI LOG V8.5 (SECURE EDITION) AVVIATO ===")
-    return logger, qt_handler.signaler
+    # 3. GUI LOGGER (Per la Tab 10 dell'interfaccia)
+    if ui_callback:
+        gui_handler = GUILogHandler(ui_callback)
+        gui_handler.setLevel(logging.INFO) # Nella UI mostriamo le INFO e i WARNING
+        gui_handler.setFormatter(formatter)
+        logger.addHandler(gui_handler)
+
+    logger.debug("🟢 Master Logger Inizializzato. Scatola Nera attiva.")
+    return logger
