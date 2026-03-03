@@ -170,7 +170,7 @@ class Dom21App(QMainWindow):
             self.controller.start()
             self._set_btn_state("🟢 Sistema Operativo: IN ASCOLTO", "#2e7d32", "#1b5e20")
         else:
-            self.logger.warning("🛑 Spegnimento del motore Controller in corso...")
+            self.logger.warning("🛑 SSpegnimentopegnimento del motore Controller in corso...")
             self.controller.stop()
             self._set_btn_state("🔴 Avvia Sistema", "#d32f2f", "#b71c1c")
 
@@ -203,3 +203,12 @@ class Dom21App(QMainWindow):
                 QPushButton {{ background-color: {bg_color}; color: white; font-size: 24px; font-weight: bold; padding: 25px; border-radius: 10px; }}
                 QPushButton:hover {{ background-color: {hover_color}; }}
             """)
+
+# ==============================================================================
+# 🔥 FUNZIONE MANCANTE RIPRISTINATA: Avvia l'interfaccia da main.py
+# ==============================================================================
+def run_app(controller):
+    app = QApplication(sys.argv)
+    window = Dom21App(controller)
+    window.show()
+    return app.exec()
