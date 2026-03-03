@@ -1,3 +1,4 @@
+import logging
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, 
                                QLabel, QLineEdit, QPushButton, QListWidget, QGroupBox)
 from core.secure_storage import BookmakerManager
@@ -45,7 +46,6 @@ class BookmakerTab(QWidget):
         
         right_group.setLayout(right_layout)
 
-        # Aggiungi al layout principale
         layout.addLayout(left_panel, 1)
         layout.addWidget(right_group, 2)
         
@@ -54,21 +54,31 @@ class BookmakerTab(QWidget):
     def refresh(self):
         self.list.clear()
         for b in self.manager.all():
-            # Mostra solo il nome e l'username, la password (cifrata) resta invisibile
             self.list.addItem(f"{b['name']} | User: {b['username']}")
 
     def add_bookmaker(self):
-        if self.name.text() and self.user.text() and self.pwd.text():
-            self.manager.add(self.name.text(), self.user.text(), self.pwd.text())
-            # Svuota i campi dopo il salvataggio
+        b_name = self.name.text()
+        b_user = self.user.text()
+        b_pwd = self.pwd.text()
+        
+        if b_name and b_user and b_pwd:
+            logging.info(f"🖱️ [UI] Tentativo di salvataggio credenziali per il bookmaker: {b_name}")
+            self.manager.add(b_name, b_user, b_pwd)
             self.name.clear()
             self.user.clear()
             self.pwd.clear()
             self.refresh()
+            logging.info(f"✅ [VAULT] Credenziali per '{b_name}' salvate e criptate con successo.")
+        else:
+            logging.warning("⚠️ [UI] Tentativo di salvataggio fallito: campi incompleti.")
 
     def delete_selected(self):
-        row = self.list.currentRow()
-        if row < 0: return
-        data = self.manager.all()
-        self.manager.delete(data[row]["id"])
-        self.refresh()
+        items = self.list.selectedItems()
+        if not items:
+            return
+        for item in items:
+            name = item.text().split(" | ")[0]
+            logging.warning(f"🖱️ [UI] Richiesta eliminazione account dal Vault: {name}")
+            self.manager.delete(name)
+            self.list.takeItem(self.list.row(item))
+            logging.info(f"🗑️ [VAULT] Account '{name}' eliminato definitivamente.")
