@@ -145,18 +145,98 @@ class DomExecutorPlaywright:
         except: return 0.0
 
     def place_bet(self, teams, market, stake, test_mode=False):
-        """Protocollo di scommessa reale."""
+        """Protocollo di scommessa reale End-to-End."""
         if "place_bet" in self._chaos_hooks: 
             return self._chaos_hooks["place_bet"](teams, market, stake)
             
         with self._browser_lock:
-            if not self.page or self.page.is_closed(): return False
+            if not self.page or self.page.is_closed(): 
+                self.logger.error("❌ Errore: Browser chiuso o disconnesso.")
+                return False
 
         try:
-            self.logger.info(f"🎯 Protocollo Scommessa: {teams} @ {market}")
-            # Logica di navigazione (già vista) qui...
-            # Per ora torniamo True se arriviamo qui per superare i test di logica
-            return True
+            self.logger.info(f"🎯 Protocollo Scommessa INIZIATO: {teams} @ {market} | Stake: €{stake}")
+            time.sleep(1.5)
+            
+            # --- 1. RICERCA PARTITA ---
+            search_icon_selector = ".hm-HeaderSearchIcon"
+            if self.page.locator(search_icon_selector).count() > 0:
+                self.page.locator(search_icon_selector).first.click(delay=150)
+                time.sleep(1)
+                
+                search_input_selector = ".sml-SearchTextInput"
+                if self.page.locator(search_input_selector).count() > 0:
+                    self.logger.info(f"⌨️ Digitazione squadra: {teams[:15]}")
+                    self.page.locator(search_input_selector).first.type(teams[:15], delay=120) 
+                    time.sleep(2) 
+                else:
+                    self.logger.error("❌ Impossibile trovare la barra di ricerca testo.")
+                    return False
+            else:
+                self.logger.error("❌ Impossibile trovare l'icona di ricerca.")
+                return False
+
+            # --- 2. APERTURA EVENTO ---
+            try:
+                 self.page.keyboard.press("Enter")
+                 time.sleep(3)
+            except: 
+                 self.logger.error("❌ Fallito caricamento pagina evento.")
+                 return False
+
+            # --- 3. SELEZIONE QUOTA/MERCATO ---
+            self.logger.info(f"🖱️ Ricerca della quota a schermo: '{market}'...")
+            self.page.mouse.wheel(0, 400) # Scrolla giù per caricare i mercati
+            time.sleep(1.5)
+
+            try:
+                # Cerca l'elemento che contiene il testo esatto del mercato/quota
+                market_locator = self.page.get_by_text(market, exact=True).first
+                if market_locator.count() > 0:
+                    market_locator.click(delay=150)
+                    self.logger.info("✅ Quota cliccata con successo.")
+                    time.sleep(1.5)
+                else:
+                    self.logger.error(f"❌ Impossibile trovare la quota o il mercato '{market}' a schermo.")
+                    return False
+            except Exception as e:
+                self.logger.error(f"❌ Errore durante il click sulla quota: {e}")
+                return False
+
+            # --- 4. COMPILAZIONE SCHEDINA ---
+            self.logger.info("🧾 Apertura Schedina in corso...")
+            betslip_input_selector = ".bs-Stake_Input"
+            if self.page.locator(betslip_input_selector).count() > 0:
+                self.page.locator(betslip_input_selector).first.fill(str(stake))
+                time.sleep(0.8)
+                
+                # --- 5. PIAZZAMENTO E VERIFICA RICEVUTA ---
+                if self.allow_place and not test_mode:
+                    place_button_selector = ".bs-PlaceBetButton"
+                    if self.page.locator(place_button_selector).count() > 0:
+                        self.logger.critical(f"🚀 PREMUTO TASTO SCOMMETTI! Attesa conferma dal Bookmaker...")
+                        self.page.locator(place_button_selector).first.click(delay=200)
+                        
+                        # VERIFICA REALE: Attendiamo la ricevuta di Bet365
+                        try:
+                            # Classi tipiche del messaggio "Scommessa Piazzata" di Bet365
+                            receipt_selector = ".bs-ReceiptMessage, .bs-ReceiptContent, .bs-Receipt"
+                            self.page.wait_for_selector(receipt_selector, timeout=6000)
+                            self.logger.info("✅💰 SCOMMESSA CONFERMATA DAL BOOKMAKER!")
+                            return True
+                        except:
+                            self.logger.error("⚠️ Scommessa cliccata, ma nessuna ricevuta confermata a schermo. Verificare saldo.")
+                            return False # Ritorna False per far scattare l'alert di sicurezza dell'engine
+                    else:
+                        self.logger.error("❌ Bottone 'Scommetti' non trovato nella schedina.")
+                        return False
+                else:
+                    self.logger.warning("🛡️ Modalità TEST attiva (allow_place=False). Scommessa inserita ma NON inviata.")
+                    return True
+            else:
+                self.logger.error("❌ Campo dell'importo nella schedina non trovato.")
+                return False
+
         except Exception as e:
-            self.logger.error(f"Errore piazzamento: {e}")
+            self.logger.error(f"❌ Errore critico nel protocollo di scommessa: {e}")
             return False
