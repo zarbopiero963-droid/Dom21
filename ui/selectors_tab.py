@@ -1,3 +1,4 @@
+import logging
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, 
                                QLabel, QLineEdit, QPushButton, QListWidget, QGroupBox)
 from core.secure_storage import SelectorManager
@@ -46,7 +47,6 @@ class SelectorsTab(QWidget):
         
         right_group.setLayout(right_layout)
 
-        # Aggiungi al layout principale
         layout.addLayout(left_panel, 1)
         layout.addWidget(right_group, 2)
         
@@ -58,17 +58,28 @@ class SelectorsTab(QWidget):
             self.list.addItem(f"{s['name']} | Book: {s['bookmaker']} | {s['value']}")
 
     def add_selector(self):
-        if self.name.text() and self.value.text():
-            self.manager.add(self.name.text(), self.book.text(), self.value.text())
-            # Svuota i campi dopo aver salvato
+        s_name = self.name.text()
+        s_book = self.book.text()
+        s_val = self.value.text()
+        
+        if s_name and s_val:
+            logging.info(f"🖱️ [UI] Aggiornamento selettore DOM '{s_name}' per {s_book} -> {s_val}")
+            self.manager.add(s_name, s_book, s_val)
             self.name.clear()
             self.book.clear()
             self.value.clear()
             self.refresh()
+            logging.info(f"✅ [DOM] Selettore '{s_name}' salvato. Verrà usato al prossimo avvio/scommessa.")
+        else:
+            logging.warning("⚠️ [UI] Impossibile salvare selettore: campi vuoti.")
 
     def delete_selected(self):
-        row = self.list.currentRow()
-        if row < 0: return
-        data = self.manager.all()
-        self.manager.delete(data[row]["id"])
-        self.refresh()
+        items = self.list.selectedItems()
+        if not items:
+            return
+        for item in items:
+            name = item.text().split(" | ")[0]
+            logging.warning(f"🖱️ [UI] Eliminazione selettore DOM: {name}")
+            self.manager.delete(name)
+            self.list.takeItem(self.list.row(item))
+            logging.info(f"🗑️ [DOM] Selettore '{name}' rimosso dal database.")
