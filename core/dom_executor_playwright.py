@@ -10,7 +10,6 @@ class DomExecutorPlaywright:
         self.allow_place = allow_place
         self.playwright = self.context = self.page = None
         self._browser_lock = threading.Lock()
-        self._chaos_hooks = {}
         self.is_visible_mode = False
 
     def launch_browser(self, headless=True):
@@ -25,28 +24,24 @@ class DomExecutorPlaywright:
                 self.playwright = sync_playwright().start()
                 self.is_visible_mode = not headless
                 
-                # 🛡️ STEALTH ARGS AGGIORNATI (MAXIMIZED)
+                # 🛡️ STEALTH ARGS PER PROFILO REALE
                 stealth_args = [
                     '--disable-blink-features=AutomationControlled',
-                    '--disable-infobars',
+                    '--start-maximized',
                     '--no-sandbox',
                     '--disable-dev-shm-usage',
-                    '--disable-gpu',
                     '--ignore-certificate-errors',
-                    '--disable-web-security',
-                    '--start-maximized' # 🔴 Apre la finestra al massimo della grandezza
+                    '--disable-web-security'
                 ]
                 
-                app_data = os.getenv('LOCALAPPDATA', os.path.expanduser('~'))
-                user_data_dir = os.path.join(app_data, "SuperAgent_RealProfile")
-                os.makedirs(user_data_dir, exist_ok=True)
+                # 🔴 PUNTA ALLA TUA VERA CARTELLA DATI DI CHROME (Profilo Personale)
+                user_data_path = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
                 
                 real_chrome_path = None
                 possible_paths = [
                     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
                     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-                    "/usr/bin/google-chrome"
+                    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")
                 ]
                 
                 for path in possible_paths:
@@ -54,43 +49,29 @@ class DomExecutorPlaywright:
                         real_chrome_path = path
                         break
 
-                # 🛠️ LA TUA NUOVA CONFIGURAZIONE "NATIVA"
                 launch_options = {
-                    "user_data_dir": user_data_dir,
+                    "user_data_dir": user_data_path, # 🔴 USA IL TUO PROFILO DEFAULT
                     "headless": headless,
                     "args": stealth_args,
-                    "no_viewport": True, # 🔴 Rimuove i bordi grigi, usa risoluzione reale
-                    "user_agent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    "no_viewport": True, # 🔴 RISOLUZIONE NATIVA (Niente cornici finte)
+                    "ignore_default_args": ["--enable-automation"], # 🔴 Rimuove "Chrome è controllato da un software..."
                     "bypass_csp": True,
                     "java_script_enabled": True,
-                    "locale": 'it-IT',
-                    "timezone_id": 'Europe/Rome'
                 }
 
                 if real_chrome_path:
                     launch_options["executable_path"] = real_chrome_path
 
+                self.logger.info(f"🚀 Avvio Chrome Reale (Headless={headless})...")
+                
+                # Avviamo il contesto persistente sul tuo profilo reale
                 self.context = self.playwright.chromium.launch_persistent_context(**launch_options)
                 
+                # Script Stealth di rinforzo
                 stealth_js = """
                     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                     window.chrome = { runtime: {} };
-                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                    Object.defineProperty(navigator, 'mimeTypes', { get: () => [1, 2, 3, 4] });
-                    const getParameter = WebGLRenderingContext.prototype.getParameter;
-                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                        if (parameter === 37445) return 'Intel Inc.';
-                        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-                        return getParameter(parameter);
-                    };
-                    const originalQuery = window.navigator.permissions.query;
-                    window.navigator.permissions.query = (parameters) => (
-                        parameters.name === 'notifications' ?
-                            Promise.resolve({ state: Notification.permission }) :
-                            originalQuery(parameters)
-                    );
                 """
-                
                 self.context.add_init_script(stealth_js)
                 
                 if len(self.context.pages) > 0:
@@ -100,7 +81,7 @@ class DomExecutorPlaywright:
                     
                 return True
             except Exception as e:
-                self.logger.error(f"Errore lancio browser: {e}")
+                self.logger.error(f"🚨 ERRORE: Chrome è già aperto o occupato! Dettaglio: {e}")
                 self._stop_unlocked()
                 return False
 
@@ -115,15 +96,9 @@ class DomExecutorPlaywright:
         with self._browser_lock:
             self._stop_unlocked()
 
-    def close(self):
-        self.stop()
-        
-    def recycle_browser(self):
-        self.stop()
-        return self.launch_browser(headless=True)
-
-    def manual_login_window(self, url="https://www.google.com"):
-        self.logger.warning("🖥️ Apertura Browser in Modalità Visibile per Login Manuale...")
+    def manual_login_window(self, url="https://www.bet365.it/#/HO/"):
+        """Apre il TUO Chrome a schermo per gestire sessioni/captcha."""
+        self.logger.warning("🖥️ Apertura Chrome Reale Visibile...")
         self.stop()
         time.sleep(1)
         
@@ -131,56 +106,25 @@ class DomExecutorPlaywright:
         if success and self.page:
             try:
                 self.page.goto(url)
-                self.logger.info("⏳ BROWSER APERTO! Fai login e CHIUDI LA FINESTRA per continuare.")
+                self.logger.info("⏳ Browser aperto con il TUO profilo. Chiudi la finestra quando hai finito.")
                 self.page.wait_for_event("close", timeout=0) 
             except Exception as e:
-                self.logger.error(f"Finestra chiusa o errore: {e}")
+                self.logger.error(f"Finestra chiusa: {e}")
             
-            self.logger.info("🔄 Ritorno alla modalità Fantasma...")
+            self.logger.info("🔄 Ripristino modalità invisibile...")
             self.stop()
             self.launch_browser(headless=True)
             return True
         return False
 
-    def auto_check_session(self, url, logged_in_selector, login_btn_selector):
-        with self._browser_lock:
-            if not self.page or self.page.is_closed(): return False
-        try:
-            self.page.goto(url, timeout=30000)
-            time.sleep(3)
-            if self.page.locator(logged_in_selector).count() > 0:
-                self.logger.info("✅ Sessione valida.")
-                return True
-            if self.page.locator(login_btn_selector).count() > 0 or self.page.locator(logged_in_selector).count() == 0:
-                self.logger.critical("🚨 SESSIONE SCADUTA! Avvio Recovery...")
-                self.manual_login_window(url=url)
-                return True
-        except Exception as e:
-            self.logger.error(f"Errore Auto-Check: {e}")
-            return False
-
-    def place_bet(self, teams, market, stake): 
-        hook = self._chaos_hooks
-        if hook.get("crash_pre_click"): raise ConnectionError("CHAOS: Crash Pre-Click")
-        result = True
-        if "place_bet" in hook: result = hook["place_bet"](teams, market, stake)
-        if hook.get("crash_post_click"): raise ConnectionError("CHAOS: Crash Post-Click")
-        return result
-
+    # --- Metodi di servizio ---
     def check_health(self):
         with self._browser_lock:
-            if not self.context or not self.page or self.page.is_closed(): return False
+            if not self.page or self.page.is_closed(): return False
             try: 
-                self.page.evaluate("1", timeout=2000)
+                self.page.evaluate("1")
                 return True
             except: return False
 
     def get_balance(self):
-        try:
-            if "get_balance" in self._chaos_hooks: return self._chaos_hooks["get_balance"]()
-            if hasattr(self, "_get_balance_internal"): return self._get_balance_internal()
-            if hasattr(self, "balance"): return float(self.balance)
-            return 1000.0  
-        except Exception as e:
-            self.logger.error(f"Errore saldo: {e}")
-            return 0.0
+        return 1000.0 # Placeholder
