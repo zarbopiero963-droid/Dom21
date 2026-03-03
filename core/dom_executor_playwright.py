@@ -4,12 +4,14 @@ import os
 import time
 from playwright.sync_api import sync_playwright
 
+
 class DomExecutorPlaywright:
     def __init__(self, logger=None, allow_place=False):
         self.logger = logger or logging.getLogger("DomExecutor")
         self.allow_place = allow_place
         self.playwright = self.context = self.page = None
         self._browser_lock = threading.Lock()
+        self._chaos_hooks = {}
         self.is_visible_mode = False
 
     def launch_browser(self, headless=True):
@@ -117,7 +119,6 @@ class DomExecutorPlaywright:
             return True
         return False
 
-    # --- Metodi di servizio ---
     def check_health(self):
         with self._browser_lock:
             if not self.page or self.page.is_closed(): return False
@@ -127,4 +128,53 @@ class DomExecutorPlaywright:
             except: return False
 
     def get_balance(self):
-        return 1000.0 # Placeholder
+        """Legge il saldo reale direttamente dal DOM del bookmaker (Bet365)."""
+        with self._browser_lock:
+            if not self.page or self.page.is_closed():
+                self.logger.warning("Impossibile leggere il saldo: Browser chiuso.")
+                return 0.0
+
+        try:
+            import re
+            
+            # 🎯 Vettori di attacco (Selettori CSS tipici del saldo Bet365)
+            # Bet365 cambia spesso le classi HTML per difendersi dai bot. 
+            # Noi ne proviamo diverse in cascata finché non lo troviamo.
+            selectors = [
+                ".hm-Balance",                   # Classe storica Bet365
+                ".nav-top__balance",             # Classe header moderno
+                "[data-c='HeaderBalance']",      # Attributo React/Angular
+                ".user-balance",                 # Classe generica
+                ".bl-Balance"                    # Classe alternativa
+            ]
+            
+            balance_text = ""
+            
+            # Cerca il saldo a schermo senza ricaricare la pagina (invisibile)
+            for selector in selectors:
+                if self.page.locator(selector).count() > 0:
+                    balance_text = self.page.locator(selector).first.inner_text()
+                    break # Trovato! Interrompi la ricerca
+            
+            if not balance_text:
+                self.logger.debug("⚠️ Saldo non trovato a schermo. Potresti non essere loggato o essere in una pagina senza header.")
+                return 0.0
+                
+            # 🧹 Pulizia del dato (Regex Hedge-Grade)
+            # Trasforma stringhe come "€ 1.234,56" o "Balance: 1234,56 €" -> 1234.56
+            clean_text = balance_text.replace(".", "") # Togli i punti delle migliaia
+            clean_text = clean_text.replace(",", ".")  # Trasforma le virgole dei decimali in punti (standard Python)
+            
+            # Estrae solo il numero matematico
+            match = re.search(r'\d+\.\d+|\d+', clean_text)
+            
+            if match:
+                real_balance = float(match.group())
+                self.logger.info(f"💰 Saldo Reale Agganciato: € {real_balance:.2f}")
+                return real_balance
+            else:
+                return 0.0
+                
+        except Exception as e:
+            self.logger.error(f"Errore fatale lettura saldo: {e}")
+            return 0.0
