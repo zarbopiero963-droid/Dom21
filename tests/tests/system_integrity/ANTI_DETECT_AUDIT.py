@@ -34,13 +34,14 @@ async def run_audit():
     failures = 0
 
     async with async_playwright() as p:
-        print("🚀 Avvio motore Chromium Stealth (Headless/Cloud)...")
+        print("🚀 Avvio motore Chromium Stealth (Profilo Persistente)...")
         
         # -------------------------------------------------------------
         # PATCH HEDGE-GRADE: USA LO STESSO PROFILO DEL BOT REALE
         # -------------------------------------------------------------
         app_data = os.getenv('LOCALAPPDATA', os.path.expanduser('~'))
         user_data_dir = os.path.join(app_data, "SuperAgent_RealProfile")
+        os.makedirs(user_data_dir, exist_ok=True)
         
         real_chrome_path = None
         for path in [r"C:\Program Files\Google\Chrome\Application\chrome.exe", 
@@ -56,14 +57,15 @@ async def run_audit():
             '--no-sandbox',
             '--disable-gpu',
             '--ignore-certificate-errors',
-            '--disable-web-security'
+            '--disable-web-security',
+            '--start-maximized' # 🔴 Apre a tutto schermo nativo
         ]
 
         launch_options = {
             "user_data_dir": user_data_dir,
-            "headless": False, # Modalità visibile per guardare il test
+            "headless": False, 
             "args": stealth_args,
-            "viewport": {'width': 1920, 'height': 1080},
+            "no_viewport": True, # 🔴 Forza il browser a usare la risoluzione reale dello schermo
             "user_agent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             "bypass_csp": True,
             "java_script_enabled": True
@@ -77,7 +79,7 @@ async def run_audit():
         
         print("💉 Iniezione Payload STEALTH_V5 (Hardware GPU Spoofing + CDP Bypass)...")
         
-        # L'init_script va aggiunto al context persistente
+        # Iniezione JS Stealth
         stealth_js = """
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             window.chrome = { runtime: {} };
@@ -92,7 +94,7 @@ async def run_audit():
         """
         await context.add_init_script(stealth_js)
         
-        # Nel context persistente, usa la prima pagina aperta se esiste, altrimenti creane una nuova
+        # Usa la pagina esistente del profilo
         if len(context.pages) > 0:
             page = context.pages[0]
         else:
@@ -109,7 +111,6 @@ async def run_audit():
                 html = await page.content()
                 html = html.lower()
 
-                # Logica di validazione semplificata per il terminale
                 if "just a moment" in html or "please stand by" in html:
                     print(f"🔴 {site['name']}: Bloccato (Possibile IP Datacenter Cloudflare)")
                     failures += 1
@@ -117,7 +118,6 @@ async def run_audit():
                     print(f"🔴 {site['name']}: Rilevato come Bot!")
                     failures += 1
                 else:
-                    # Check speciale per FPScanner
                     if "fpscanner" in site['url']:
                         renderer = await page.evaluate("() => { const canvas = document.createElement('canvas'); const gl = canvas.getContext('webgl'); const debugInfo = gl.getExtension('WEBGL_debug_renderer_info'); return gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL); }")
                         if "SwiftShader" in renderer or "Google" in renderer:
@@ -141,23 +141,23 @@ async def run_audit():
                 print(f"👉 CreepJS Trust Score: {score_text}")
                 if "0%" in score_text: failures += 1
             else:
-                print("🔴 CreepJS: Impossibile leggere il punteggio (probabile blocco).")
+                print("🔴 CreepJS: Impossibile leggere il punteggio.")
                 failures += 1
         except Exception as e:
             print(f"⚠️ Errore CreepJS: {e}")
             failures += 1
 
+        print("\nCHIUDI IL BROWSER MANUALMENTE PER TERMINARE L'AUDIT.")
+        # Non chiudiamo il contesto automaticamente così puoi controllare il profilo
+        await page.wait_for_timeout(60000) 
         await context.close()
 
     print("\n========================")
-    # Su GitHub non blocchiamo la build se questi test avanzati falliscono senza proxy,
-    # ma stampiamo l'avviso.
     if failures > 0:
-        print(f"🔴 AUDIT CLOUD TERMINATO: {failures} test falliti (Normale su IP Datacenter Azure senza Proxy).")
-        # sys.exit(0) teniamo 0 per non far sembrare rotta la pipeline a causa dell'IP di GitHub
+        print(f"🔴 AUDIT CLOUD TERMINATO: {failures} test falliti.")
         sys.exit(0) 
     else:
-        print("🟢 AUDIT CLOUD SUPERATO: Perfetto anche su Datacenter!")
+        print("🟢 AUDIT CLOUD SUPERATO: Perfetto!")
         sys.exit(0)
 
 if __name__ == "__main__":
