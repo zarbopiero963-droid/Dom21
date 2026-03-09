@@ -12,6 +12,15 @@ app_data = os.getenv('LOCALAPPDATA', os.path.expanduser('~'))
 browser_path = os.path.join(app_data, "SuperAgent_Browsers")
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browser_path
 
+# --- HACK PYINSTALLER PER I PERCORSI DEI MODULI ---
+# Quando eseguito come .exe, aggiungi la cartella temporanea _MEI al sys.path
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    sys.path.insert(0, sys._MEIPASS)
+else:
+    # Se eseguito come script, aggiungi la root del progetto
+    sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
+
 def ensure_playwright_browsers(logger):
     """
     Verifica l'esistenza REALE dell'eseguibile Chromium.
@@ -44,7 +53,18 @@ def ensure_playwright_browsers(logger):
                 logger.critical(f"❌ ERRORE Bootstrap Browser: Impossibile scaricare Chromium. Errore: {e}")
                 # Lasciamo proseguire l'app (check=False logico), la UI si aprirà ma il Worker fallirà in modo sicuro
 
+# Spostiamo l'import dell'app QUI, DOPO aver sistemato sys.path
 from PySide6.QtWidgets import QApplication
+
+# Importiamo esplicitamente tutti i tab per forzare PyInstaller a includerli
+import ui.desktop_app
+import ui.bookmaker_tab
+import ui.selectors_tab
+import ui.robots_tab
+import ui.anti_detect_tab
+import ui.god_certification_tab
+import ui.history_tab
+import ui.roserpina_tab
 from ui.desktop_app import run_app
 
 # Core imports
