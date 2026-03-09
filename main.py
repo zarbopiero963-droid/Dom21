@@ -53,7 +53,6 @@ def ensure_playwright_browsers(logger):
                 logger.critical(f"❌ ERRORE Bootstrap Browser: Impossibile scaricare Chromium. Errore: {e}")
                 # Lasciamo proseguire l'app (check=False logico), la UI si aprirà ma il Worker fallirà in modo sicuro
 
-# Spostiamo l'import dell'app QUI, DOPO aver sistemato sys.path
 from PySide6.QtWidgets import QApplication
 
 # Importiamo esplicitamente tutti i tab per forzare PyInstaller a includerli
@@ -73,7 +72,8 @@ from core.ai_trainer import AITrainerEngine
 from core.health import HealthMonitor
 from core.lifecycle import SystemWatchdog
 from core.command_parser import CommandParser
-from core.logger import setup_logger
+# FIX: Importato setup_global_logger invece del vecchio setup_logger
+from core.logger import setup_global_logger
 from core.event_bus import bus
 from core.heartbeat import AppHeartbeat 
 
@@ -82,7 +82,8 @@ def main():
     app = QApplication.instance() or QApplication(sys.argv)
 
     # Inizializza il logger PRIMA del bootstrap per tracciare eventuali network fault
-    logger, log_signaler = setup_logger()
+    # FIX: Chiamata alla nuova funzione della Scatola Nera. Ritorna solo il logger.
+    logger = setup_global_logger()
     logger.info("🚀 MAIN: Inizializzazione architettura ULTRA BUILD 11/10 (Hedge-Grade LTM)...")
 
     # 🛡️ Esegue il check profondo del browser
@@ -97,10 +98,11 @@ def main():
         }
 
         controller = SuperAgentController(logger)
-        executor = controller.worker.executor
+        executor = controller.worker.executor if hasattr(controller, 'worker') else None
         
         trainer = AITrainerEngine(logger=logger)
-        trainer.set_executor(executor)
+        if executor:
+            trainer.set_executor(executor)
         
         monitor = HealthMonitor(logger)
         watchdog = SystemWatchdog(logger=logger) 
@@ -108,13 +110,8 @@ def main():
 
         watchdog.start()
 
-        exit_code = run_app(
-            logger=logger,
-            executor=executor,
-            config=config,
-            monitor=monitor,
-            controller=controller
-        )
+        # Modificato per usare run_app che avevamo inserito in desktop_app
+        exit_code = run_app(controller)
 
         logger.info("🔻 Chiusura Main...")
         if hasattr(controller, 'worker'):
