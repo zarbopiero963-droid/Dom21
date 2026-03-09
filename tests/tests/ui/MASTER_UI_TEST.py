@@ -16,7 +16,8 @@ if ROOT not in sys.path:
 # =========================================================
 # IMPORT APP
 # =========================================================
-from ui.desktop_app import DesktopApp
+# FIX: Importato Dom21App invece di DesktopApp
+from ui.desktop_app import Dom21App
 
 # =========================================================
 # TEST ENV ISOLATO
@@ -57,10 +58,14 @@ def app(qtbot, monkeypatch):
         def warning(self, msg): pass
         def error(self, msg): pass
         def critical(self, msg): pass
+        def debug(self, msg): pass
 
     # 🛡️ FIX: Aggiungiamo un DB Finto per le nuove Tab
     class MockDB:
         def get_balance(self): return 1000.0, 1000.0
+        def get_current_balance(self): return 1000.0
+        def get_peak_balance(self): return 1000.0
+        def get_all_bets(self): return []
         def get_roserpina_tables(self): return []
         def pending(self): return []
         class _lock:
@@ -78,12 +83,15 @@ def app(qtbot, monkeypatch):
             self.log_message = self.signals.log_message
             self.is_running = False
             self.db = MockDB() # 🛡️ Assegniamo il DB finto al controller
+            self.config = {}
             
         def start_listening(self): self.is_running = True
         def stop_listening(self): self.is_running = False
+        def start(self): self.is_running = True
+        def stop(self): self.is_running = False
 
-    config = {}
-    window = DesktopApp(MockLogger(), None, config, None, MockController())
+    # FIX: Istanzia Dom21App invece di DesktopApp
+    window = Dom21App(MockController())
     qtbot.addWidget(window)
     window.show()
     return window
@@ -96,8 +104,7 @@ def test_full_user_flow(app, qtbot):
     """
     print("\n🚀 INIZIO TEST END-TO-END UI")
     
-    # 1️⃣ CLOUD TAB (Indice 5 - Attenzione: con le nuove tab l'indice potrebbe essere cambiato!
-    # Se il test fallisce in futuro, controlla l'indice della Cloud Tab o usa app.tabs.setCurrentWidget)
+    # 1️⃣ CLOUD TAB (Indice 5 - Attenzione: con le nuove tab l'indice potrebbe essere cambiato!)
     # Troviamo la Cloud Tab dinamicamente per sicurezza:
     cloud_idx = -1
     for i in range(app.tabs.count()):
@@ -119,41 +126,55 @@ def test_full_user_flow(app, qtbot):
             qtbot.mouseClick(save_cloud_btn, Qt.LeftButton)
         QTest.qWait(300)
 
-    # 2️⃣ BOOKMAKER TAB (Indice 1)
-    app.tabs.setCurrentIndex(1)
-    book_tab = app.tabs.widget(1)
-    
-    book_inputs = book_tab.findChildren(QLineEdit)
-    if len(book_inputs) >= 3:
-        book_inputs[0].setText("Bet365_Test")
-        book_inputs[1].setText("user_test")
-        book_inputs[2].setText("pass_test")
-        
-    save_book_btn = book_tab.findChild(QPushButton)
-    if save_book_btn:
-        qtbot.mouseClick(save_book_btn, Qt.LeftButton)
-    QTest.qWait(300)
+    # 2️⃣ BOOKMAKER TAB
+    book_idx = -1
+    for i in range(app.tabs.count()):
+        if "Bookmaker" in app.tabs.tabText(i):
+            book_idx = i
+            break
 
-    # 3️⃣ ROBOT TAB (Indice 3)
-    app.tabs.setCurrentIndex(3)
-    robot_tab = app.tabs.widget(3)
-    
-    robot_btns = robot_tab.findChildren(QPushButton)
-    if robot_btns:
-        qtbot.mouseClick(robot_btns[0], Qt.LeftButton)
-    QTest.qWait(200)
-    
-    robot_inputs = robot_tab.findChildren(QLineEdit)
-    if len(robot_inputs) >= 2:
-        robot_inputs[0].setText("Robot_Test")
-        robot_inputs[1].setText("goal,over")
+    if book_idx != -1:
+        app.tabs.setCurrentIndex(book_idx)
+        book_tab = app.tabs.widget(book_idx)
         
-    spinboxes = robot_tab.findChildren(QDoubleSpinBox) + robot_tab.findChildren(QSpinBox)
-    if spinboxes:
-        spinboxes[0].setValue(5.0)
-    elif len(robot_inputs) >= 3:
-        robot_inputs[2].setText("5")
+        book_inputs = book_tab.findChildren(QLineEdit)
+        if len(book_inputs) >= 3:
+            book_inputs[0].setText("Bet365_Test")
+            book_inputs[1].setText("user_test")
+            book_inputs[2].setText("pass_test")
+            
+        save_book_btn = book_tab.findChild(QPushButton)
+        if save_book_btn:
+            qtbot.mouseClick(save_book_btn, Qt.LeftButton)
+        QTest.qWait(300)
+
+    # 3️⃣ ROBOT TAB
+    robot_idx = -1
+    for i in range(app.tabs.count()):
+        if "Robot" in app.tabs.tabText(i):
+            robot_idx = i
+            break
+            
+    if robot_idx != -1:
+        app.tabs.setCurrentIndex(robot_idx)
+        robot_tab = app.tabs.widget(robot_idx)
         
-    QTest.qWait(500)
+        robot_btns = robot_tab.findChildren(QPushButton)
+        if robot_btns:
+            qtbot.mouseClick(robot_btns[0], Qt.LeftButton)
+        QTest.qWait(200)
+        
+        robot_inputs = robot_tab.findChildren(QLineEdit)
+        if len(robot_inputs) >= 2:
+            robot_inputs[0].setText("Robot_Test")
+            robot_inputs[1].setText("goal,over")
+            
+        spinboxes = robot_tab.findChildren(QDoubleSpinBox) + robot_tab.findChildren(QSpinBox)
+        if spinboxes:
+            spinboxes[0].setValue(5.0)
+        elif len(robot_inputs) >= 3:
+            robot_inputs[2].setText("5")
+            
+        QTest.qWait(500)
 
     print("🟢 UI FLUSSO COMPLETO SUPERATO CON SUCCESSO")
